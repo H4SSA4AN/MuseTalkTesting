@@ -268,6 +268,7 @@ class Avatar:
         start_time = time.time()
         res_frame_list = []
 
+        frameTime = time.time()
         for i, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=int(np.ceil(float(video_num) / self.batch_size)))):
             audio_feature_batch = pe(whisper_batch.to(device))
             latent_batch = latent_batch.to(device=device, dtype=unet.model.dtype)
@@ -277,6 +278,10 @@ class Avatar:
                                     encoder_hidden_states=audio_feature_batch).sample
             pred_latents = pred_latents.to(device=device, dtype=vae.vae.dtype)
             recon = vae.decode_latents(pred_latents)
+
+            if i == int(np.ceil(float(video_num) / self.batch_size)) - 1:
+                print("Before last batch, time cost: {}s".format(time.time() - frameTime))
+
             for res_frame in recon:
                 res_frame_queue.put(res_frame)
         # Close the queue and sub-thread after all tasks are completed
