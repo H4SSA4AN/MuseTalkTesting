@@ -4,7 +4,6 @@
  video_path: "data/video/1FrameVideo.mp4"
  audio_clips:
      audio_0: "data/audio/RealTimeAudioTest.wav"
-     audio_1: "data/audio/RealTimeAudioTest.wav"
  
   
 
