@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MuseTalk Live Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        #startBtn {
+            padding: 15px 30px;
+            font-size: 18px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #startBtn:hover {
+            background-color: #0056b3;
+        }
+        #startBtn:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        #status {
+            margin: 20px 0;
+            font-weight: bold;
+            text-align: center;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #e9ecef;
+        }
+        .media-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        #videoStream {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        #audioPlayer {
+            margin: 20px 0;
+            width: 100%;
+            max-width: 500px;
+        }
+        .connection-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .server-status {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #e2e3e5;
+        }
+        .status-listening {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        .status-inference-running {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .status-ready-for-next {
+            background-color: #d4edda;
+            color: #155724;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MuseTalk Live Stream</h1>
+        
+        <div id="connectionStatus" class="connection-status disconnected">
+            Checking connection to inference server...
+        </div>
+        
+        <div id="serverStatus" class="server-status">
+            Checking server status...
+        </div>
+        
+        <div class="controls">
+            <div style="margin-bottom: 15px;">
+                <label for="fpsInput" style="margin-right: 10px; font-weight: bold;">FPS:</label>
+                <input type="number" id="fpsInput" value="25" min="1" max="60" style="width: 80px; padding: 5px; margin-right: 20px;">
+                
+                <label for="batchSizeInput" style="margin-right: 10px; font-weight: bold;">Batch Size:</label>
+                <input type="number" id="batchSizeInput" value="4" min="1" max="16" style="width: 80px; padding: 5px;">
+            </div>
+            
+            <button id="startBtn" onclick="startInference()" disabled>Start Inference</button>
+            <button onclick="testConnection()" style="margin-left: 10px;">Test Connection</button>
+            <button onclick="resetState()" style="margin-left: 10px;">Reset State</button>
+            <button onclick="testAudio()" style="margin-left: 10px;">Test Audio</button>
+        </div>
+        
+        <div id="status">Waiting for connection...</div>
+        
+        <div class="media-container">
+            <img id="videoStream" src="" style="display: none;" />
+            <audio id="audioPlayer" controls style="display: none;">
+                <source src="/audio" type="audio/wav">
+                Your browser does not support the audio element.
+            </audio>
+        </div>
+    </div>
+    
+    <script>
+        let streamStarted = false;
+        
+        // Check connection status on page load
+        window.onload = function() {
+            checkConnection();
+            checkServerStatus();
+        };
+        
+        function checkConnection() {
+            fetch('/stream_status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('connectionStatus').textContent = 'Disconnected from inference server';
+                        document.getElementById('connectionStatus').className = 'connection-status disconnected';
+                        document.getElementById('startBtn').disabled = true;
+                    } else {
+                        document.getElementById('connectionStatus').textContent = 'Connected to inference server';
+                        document.getElementById('connectionStatus').className = 'connection-status connected';
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('status').textContent = 'Ready to start inference';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('connectionStatus').textContent = 'Disconnected from inference server';
+                    document.getElementById('connectionStatus').className = 'connection-status disconnected';
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('status').textContent = 'Connection failed';
+                });
+        }
+        
+        function checkServerStatus() {
+            fetch('/server_status')
+                .then(response => response.json())
+                .then(data => {
+                    let statusText = '';
+                    let statusClass = 'server-status';
+                    
+                    switch(data.status) {
+                        case 'listening':
+                            statusText = 'Server is listening for inference requests';
+                            statusClass += ' status-listening';
+                            break;
+                        case 'inference_running':
+                            statusText = 'Inference is currently running';
+                            statusClass += ' status-inference-running';
+                            break;
+                        case 'ready_for_next':
+                            statusText = 'Server ready for next inference request';
+                            statusClass += ' status-ready-for-next';
+                            break;
+                        default:
+                            statusText = 'Unknown server status';
+                    }
+                    
+                    document.getElementById('serverStatus').textContent = statusText;
+                    document.getElementById('serverStatus').className = statusClass;
+                    
+                    // Update button state based on server status
+                    if (data.status === 'listening' || data.status === 'ready_for_next') {
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('startBtn').textContent = 'Start Inference';
+                    } else if (data.status === 'inference_running') {
+                        document.getElementById('startBtn').disabled = true;
+                        document.getElementById('startBtn').textContent = 'Inference Running...';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('serverStatus').textContent = 'Unable to check server status';
+                    document.getElementById('serverStatus').className = 'server-status';
+                });
+        }
+        
+        function startInference() {
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('startBtn').textContent = 'Starting...';
+            document.getElementById('status').textContent = 'Starting inference...';
+            
+            // Get FPS and batch size values
+            const fps = parseInt(document.getElementById('fpsInput').value);
+            const batchSize = parseInt(document.getElementById('batchSizeInput').value);
+            
+            // Validate inputs
+            if (fps < 1 || fps > 60) {
+                alert('FPS must be between 1 and 60');
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('startBtn').textContent = 'Start Inference';
+                return;
+            }
+            
+            if (batchSize < 1 || batchSize > 16) {
+                alert('Batch size must be between 1 and 16');
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('startBtn').textContent = 'Start Inference';
+                return;
+            }
+            
+            // Clear and hide previous stream if it exists
+            const videoStream = document.getElementById('videoStream');
+            videoStream.src = ''; // Clear the source to remove cached image
+            videoStream.style.display = 'none';
+            document.getElementById('audioPlayer').style.display = 'none';
+            streamStarted = false;
+            
+            fetch('/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    fps: fps,
+                    batch_size: batchSize
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('status').textContent = 'Inference started! Buffering frames...';
+                        // Start showing the video stream after a short delay
+                        setTimeout(() => {
+                            const videoStream = document.getElementById('videoStream');
+                            // Force browser to not use cached image by adding timestamp
+                            videoStream.src = '/stream?t=' + Date.now();
+                            videoStream.style.display = 'block';
+                            document.getElementById('status').textContent = 'Waiting for frames to start...';
+                            
+                            // Start monitoring for actual frame streaming
+                            monitorFrameStreaming();
+                        }, 1000);
+                    } else {
+                        document.getElementById('status').textContent = 'Error: ' + data.error;
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('startBtn').textContent = 'Start Inference';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('status').textContent = 'Error: ' + error;
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('startBtn').textContent = 'Start Inference';
+                });
+        }
+        
+        function monitorFrameStreaming() {
+            if (streamStarted) return;
+            
+            // Check debug state to get more detailed information
+            fetch('/debug_state')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.stream_ready && !streamStarted) {
+                        // Stream is ready, check if frames are in queue
+                        if (data.frame_queue_size > 0) {
+                            // Frames are available, start audio immediately
+                            streamStarted = true;
+                            document.getElementById('status').textContent = 'Frames available! Starting audio...';
+                            
+                            // Show and start audio player
+                            const audioPlayer = document.getElementById('audioPlayer');
+                            audioPlayer.style.display = 'block';
+                            
+                            // Force reload the audio source to ensure it's fresh
+                            audioPlayer.load();
+                            
+                            // Try to play audio
+                            audioPlayer.play().then(() => {
+                                console.log('Audio started successfully');
+                                document.getElementById('status').textContent = 'Streaming with audio!';
+                            }).catch(error => {
+                                console.log('Audio autoplay failed:', error);
+                                console.log('Audio element:', audioPlayer);
+                                console.log('Audio src:', audioPlayer.src);
+                                document.getElementById('status').textContent = 'Streaming with audio (click play to start audio)';
+                            });
+                            
+                            // Start monitoring for completion
+                            monitorInferenceCompletion();
+                        } else {
+                            // Stream ready but no frames yet, wait a bit more
+                            setTimeout(monitorFrameStreaming, 200);
+                        }
+                    } else if (!data.inference_complete) {
+                        // Check again in 500ms
+                        setTimeout(monitorFrameStreaming, 500);
+                    } else if (data.inference_complete) {
+                        // Inference completed, check server status
+                        setTimeout(() => {
+                            checkServerStatus();
+                            document.getElementById('status').textContent = 'Inference completed. Ready for next run.';
+                        }, 1000);
+                    }
+                })
+                .catch(error => {
+                    console.log('Error checking debug state:', error);
+                    // Fallback to stream_status
+                    fetch('/stream_status')
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.stream_ready && !streamStarted) {
+                                // Stream is ready, wait a bit more to ensure frames are actually being sent
+                                setTimeout(() => {
+                                    if (!streamStarted) {
+                                        streamStarted = true;
+                                        document.getElementById('status').textContent = 'Stream ready! Starting audio...';
+                                        
+                                        // Show and start audio player
+                                        const audioPlayer = document.getElementById('audioPlayer');
+                                        audioPlayer.style.display = 'block';
+                                        
+                                        // Force reload the audio source to ensure it's fresh
+                                        audioPlayer.load();
+                                        
+                                        // Try to play audio
+                                        audioPlayer.play().then(() => {
+                                            console.log('Audio started successfully');
+                                            document.getElementById('status').textContent = 'Streaming with audio!';
+                                        }).catch(error => {
+                                            console.log('Audio autoplay failed:', error);
+                                            console.log('Audio element:', audioPlayer);
+                                            console.log('Audio src:', audioPlayer.src);
+                                            document.getElementById('status').textContent = 'Streaming with audio (click play to start audio)';
+                                        });
+                                        
+                                        // Start monitoring for completion
+                                        monitorInferenceCompletion();
+                                    }
+                                }, 1000); // Wait 1 second after stream_ready to ensure frames are flowing
+                            } else if (!data.inference_complete) {
+                                // Check again in 500ms
+                                setTimeout(monitorFrameStreaming, 500);
+                            }
+                        })
+                        .catch(error => {
+                            console.log('Error checking stream status:', error);
+                            // Check again in 1 second
+                            setTimeout(monitorFrameStreaming, 1000);
+                        });
+                });
+        }
+        
+        function monitorInferenceCompletion() {
+            fetch('/stream_status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.inference_complete) {
+                        // Inference completed, check server status
+                        setTimeout(() => {
+                            checkServerStatus();
+                            document.getElementById('status').textContent = 'Inference completed. Ready for next run.';
+                        }, 1000);
+                    } else {
+                        // Check again in 1 second
+                        setTimeout(monitorInferenceCompletion, 1000);
+                    }
+                })
+                .catch(error => {
+                    console.log('Error checking inference completion:', error);
+                    // Check again in 2 seconds
+                    setTimeout(monitorInferenceCompletion, 2000);
+                });
+        }
+        
+        // Periodically check server status
+        setInterval(checkServerStatus, 5000);
+        
+        function testConnection() {
+            fetch('/test_connection')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Connection test result:', data);
+                    alert('Connection test result: ' + JSON.stringify(data, null, 2));
+                })
+                .catch(error => {
+                    console.log('Connection test failed:', error);
+                    alert('Connection test failed: ' + error);
+                });
+        }
+        
+        function resetState() {
+            fetch('/reset_state')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Reset state result:', data);
+                    alert('Reset state result: ' + JSON.stringify(data, null, 2));
+                    checkServerStatus();
+                })
+                .catch(error => {
+                    console.log('Reset state failed:', error);
+                    alert('Reset state failed: ' + error);
+                });
+        }
+        
+        function testAudio() {
+            console.log('Testing audio...');
+            const audioPlayer = document.getElementById('audioPlayer');
+            
+            // Show the audio player
+            audioPlayer.style.display = 'block';
+            
+            // Force reload the audio source
+            audioPlayer.load();
+            
+            // Try to play
+            audioPlayer.play().then(() => {
+                console.log('Audio test successful!');
+                alert('Audio test successful! Audio should be playing.');
+            }).catch(error => {
+                console.log('Audio test failed:', error);
+                alert('Audio test failed: ' + error.message + '\n\nPlease check:\n1. Audio file exists on server\n2. Browser allows autoplay\n3. Volume is not muted');
+            });
+        }
+    </script>
+</body>
+</html>

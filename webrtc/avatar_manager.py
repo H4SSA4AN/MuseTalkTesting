@@ -43,7 +43,7 @@ class AvatarManager:
     def _load_audio_length(self):
         """Load audio file length"""
         try:
-            self.audio_length = librosa.get_duration(filename=AUDIO_CONFIG["audio_path"])
+            self.audio_length = librosa.get_duration(path=AUDIO_CONFIG["audio_path"])
             print(f"Audio length: {self.audio_length} seconds")
         except Exception as e:
             print(f"Could not determine audio length, defaulting to {AUDIO_CONFIG['default_duration']}s. Error: {e}")

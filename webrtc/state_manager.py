@@ -51,6 +51,8 @@ class StreamingState:
         self.inference_end_time = None
         self.inference_complete = False
         self.stream_ready = False
+        self.streaming_started = False
+        self.inference_triggered = False
         self.frame_buffer.clear()
     
     def start_inference(self):

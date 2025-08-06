@@ -1,5 +1,5 @@
 """
-Configuration file for MuseTalk streaming server
+Configuration file for MuseTalk inference server
 """
 
 # Avatar Configuration
@@ -40,8 +40,8 @@ STREAMING_CONFIG = {
     "video_height": 720
 }
 
-# Server Configuration
+# Server Configuration - Updated for external access
 SERVER_CONFIG = {
-    "host": "localhost",
+    "host": "0.0.0.0",  # Allow external connections
     "port": 8080
 } 
