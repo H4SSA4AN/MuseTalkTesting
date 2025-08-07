@@ -2,6 +2,35 @@
 
 <strong>MuseTalk: Real-Time High-Fidelity Video Dubbing via Spatio-Temporal Sampling</strong>
 
+## 🚀 Quick Start
+
+**New users**: Use our all-in-one installation script for the easiest setup experience!
+
+```bash
+# Windows
+install_musetalk.bat
+
+# Linux/macOS
+chmod +x install_musetalk.sh
+./install_musetalk.sh
+
+# Cross-platform (Python)
+python install_musetalk.py
+```
+
+After installation, configure ports and start the servers:
+```bash
+# Configure ports (optional)
+python create_env.py
+
+# Start servers
+python start_servers.py
+
+# Access web interface at http://localhost:8080
+```
+
+📖 **For detailed installation instructions, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)**
+
 Yue Zhang<sup>\*</sup>,
 Zhizhou Zhong<sup>\*</sup>,
 Minhao Liu<sup>\*</sup>,
