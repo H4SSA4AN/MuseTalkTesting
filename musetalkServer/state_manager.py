@@ -1,5 +1,5 @@
 """
-State management for MuseTalk streaming server
+State management for MuseTalk inference server
 """
 
 from collections import deque
@@ -9,15 +9,14 @@ import time
 
 
 @dataclass
-class StreamingState:
-    """Manages the state of the streaming system"""
+class InferenceState:
+    """Manages the state of the inference system"""
     
     # Frame buffer
     frame_buffer_size: int
     frame_buffer: deque = field(init=False)
     
-    # Streaming flags
-    streaming_started: bool = False
+    # Inference flags
     inference_complete: bool = False
     inference_triggered: bool = False
     stream_ready: bool = False
@@ -31,16 +30,31 @@ class StreamingState:
     inference_start_time: Optional[float] = None
     inference_end_time: Optional[float] = None
     
-    # Avatar settings
-    avatar_fps: int = 25
-    audio_length: float = 0
-    
-    # Avatar instance
-    pre_initialized_avatar: Optional[object] = None
-    avatar_ready: bool = False
-    
     def __post_init__(self):
         self.frame_buffer = deque(maxlen=self.frame_buffer_size)
+    
+    def reset_all_state(self):
+        """Reset all state for a new inference run"""
+        print("Resetting all inference state for new run...")
+        
+        # Reset inference flags
+        self.inference_complete = False
+        self.inference_triggered = False
+        self.stream_ready = False
+        
+        # Reset batch tracking
+        self.batches_processed = 0
+        self.total_batches_expected = 0
+        self.estimated_inference_time = 0
+        
+        # Reset timing
+        self.inference_start_time = None
+        self.inference_end_time = None
+        
+        # Clear frame buffer
+        self.frame_buffer.clear()
+        
+        print("State reset complete - ready for new inference")
     
     def reset_inference_state(self):
         """Reset inference-related state for a new run"""
@@ -56,7 +70,6 @@ class StreamingState:
     def start_inference(self):
         """Mark inference as started"""
         self.inference_triggered = True
-        self.streaming_started = True
         self.inference_start_time = time.time()
     
     def complete_inference(self):
@@ -88,8 +101,6 @@ class StreamingState:
             return self.inference_end_time - self.inference_start_time
         return 0.0
     
-    def get_streaming_duration(self) -> float:
-        """Get streaming duration (from inference end to now)"""
-        if self.inference_end_time:
-            return time.time() - self.inference_end_time
-        return 0.0 
+    def is_ready_for_new_inference(self) -> bool:
+        """Check if system is ready for a new inference run"""
+        return not self.inference_triggered or self.inference_complete

@@ -1,20 +1,19 @@
 """
-Streaming handler for MuseTalk frame processing and MJPEG streaming
+Inference handler for MuseTalk frame processing and streaming
 """
 
 import asyncio
 import cv2
 import numpy as np
 import time
-import math
 from musetalk.utils.blending import get_image_blending
-from state_manager import StreamingState
+from state_manager import InferenceState
 
 
-class StreamingHandler:
-    """Handles frame processing and MJPEG streaming"""
+class InferenceHandler:
+    """Handles frame processing and inference management"""
     
-    def __init__(self, state: StreamingState, avatar_manager):
+    def __init__(self, state: InferenceState, avatar_manager):
         self.state = state
         self.avatar_manager = avatar_manager
         self.avatar = avatar_manager.get_avatar()
@@ -32,6 +31,8 @@ class StreamingHandler:
             
             idx = 0
             current_batch = 0
+            frames_processed = 0
+            
             while idx < video_len:
                 try:
                     # Get frame from the original inference queue
@@ -44,6 +45,11 @@ class StreamingHandler:
                         asyncio.run_coroutine_threadsafe(
                             self._add_frame_to_buffer(processed_frame), loop
                         )
+                        frames_processed += 1
+                        
+                        # Debug: Print progress every 50 frames
+                        if frames_processed % 50 == 0:
+                            print(f"Processed {frames_processed}/{video_len} frames")
                     
                     idx += 1
                     
@@ -66,6 +72,8 @@ class StreamingHandler:
             if idx % self.avatar.batch_size != 0:
                 self.state.batches_processed = current_batch + 1
             
+            print(f"Inference processing complete. Processed {frames_processed} frames out of {video_len}")
+            
             # Signal end of inference
             asyncio.run_coroutine_threadsafe(
                 self._add_frame_to_buffer(None), loop
@@ -86,7 +94,8 @@ class StreamingHandler:
             # Resize the result frame
             try:
                 res_frame = cv2.resize(res_frame.astype(np.uint8), (x2 - x1, y2 - y1))
-            except:
+            except Exception as e:
+                print(f"Error resizing frame {idx}: {e}")
                 return None
             
             # Get mask data
@@ -128,54 +137,3 @@ class StreamingHandler:
     async def _add_frame_to_buffer(self, frame):
         """Add a frame to the buffer"""
         self.state.add_frame_to_buffer(frame)
-    
-    async def mjpeg_response(self):
-        """Generate MJPEG response for streaming"""
-        boundary = "frame"
-        frame_delay = 1.0 / self.avatar_manager.get_fps()
-        start_time = asyncio.get_event_loop().time()
-        frame_count = 0
-        
-        while True:
-            # Wait for frames to be available in buffer
-            while self.state.get_buffer_size() == 0 and not self.state.inference_complete:
-                await asyncio.sleep(0.01)
-            
-            # Get frame from buffer
-            frame = self.state.get_frame_from_buffer()
-            if frame is None:
-                # No more frames and inference is complete
-                break
-            
-            frame_count += 1
-            
-            if frame is None:
-                # End of stream signal
-                self._log_stream_completion()
-                break
-            
-            # Calculate when this frame should be displayed
-            target_time = start_time + (frame_count * frame_delay)
-            current_time = asyncio.get_event_loop().time()
-            
-            # Wait if we're ahead of schedule
-            if current_time < target_time:
-                await asyncio.sleep(target_time - current_time)
-            
-            # Convert numpy frame to JPEG
-            ret, jpeg = cv2.imencode('.jpg', frame)
-            if not ret:
-                continue
-                
-            yield (b"--" + boundary.encode() + b"\r\n"
-                   b"Content-Type: image/jpeg\r\n"
-                   b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-    
-    def _log_stream_completion(self):
-        """Log stream completion with timing information"""
-        stream_end_time = time.time()
-        if self.state.inference_end_time is not None:
-            streaming_duration = stream_end_time - self.state.inference_end_time
-            print(f"Streaming finished. Time from inference end to stream end: {streaming_duration:.2f} seconds")
-        else:
-            print("Streaming finished (inference end time not available)") 

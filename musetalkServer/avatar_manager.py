@@ -1,5 +1,5 @@
 """
-Avatar management for MuseTalk streaming server
+Avatar management for MuseTalk inference server
 """
 
 import sys
@@ -67,4 +67,11 @@ class AvatarManager:
     
     def get_audio_path(self) -> str:
         """Get audio file path"""
-        return AUDIO_CONFIG["audio_path"] 
+        return AUDIO_CONFIG["audio_path"]
+    
+    def update_fps(self, new_fps: int):
+        """Update the FPS setting"""
+        self.avatar_fps = new_fps
+        if self.avatar:
+            self.avatar.fps = new_fps
+        print(f"Avatar FPS updated to: {new_fps}")
