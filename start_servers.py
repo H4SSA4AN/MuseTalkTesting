@@ -11,6 +11,21 @@ import signal
 import threading
 import platform
 
+def load_env_file():
+    """Load environment variables from .env file if it exists"""
+    env_file = ".env"
+    if os.path.exists(env_file):
+        print(f"Loading environment variables from {env_file}")
+        with open(env_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+        print("Environment variables loaded successfully")
+    else:
+        print("No .env file found, using default configuration")
+
 def get_activate_command():
     """Get the appropriate activation command based on the platform"""
     if platform.system() == "Windows":
@@ -22,7 +37,11 @@ def get_activate_command():
 
 def run_musetalk_server():
     """Run the MuseTalk inference server in the MuseTestEnv environment"""
-    print("Starting MuseTalk inference server in MuseTestEnv environment...")
+    # Get port from environment or use default
+    musetalk_port = os.getenv("MUSETALK_PORT", "8081")
+    musetalk_host = os.getenv("MUSETALK_HOST", "localhost")
+    
+    print(f"Starting MuseTalk inference server on {musetalk_host}:{musetalk_port} in MuseTestEnv environment...")
     try:
         if platform.system() == "Windows":
             # Windows: Use conda activate
@@ -39,7 +58,11 @@ def run_musetalk_server():
 
 def run_web_server():
     """Run the web interface server"""
-    print("Starting web interface server...")
+    # Get port from environment or use default
+    web_port = os.getenv("WEB_PORT", "8080")
+    web_host = os.getenv("WEB_HOST", "localhost")
+    
+    print(f"Starting web interface server on {web_host}:{web_port}...")
     try:
         subprocess.run([sys.executable, "webrtc/server.py"], check=True)
     except KeyboardInterrupt:
@@ -70,8 +93,18 @@ def check_environment():
 def main():
     """Main function to start both servers"""
     print("Starting MuseTalk with separated servers...")
-    print("MuseTalk inference server will run on port 8081 (in MuseTestEnv)")
-    print("Web interface server will run on port 8080")
+    
+    # Load environment variables
+    load_env_file()
+    
+    # Get port numbers from environment
+    musetalk_port = os.getenv("MUSETALK_PORT", "8081")
+    web_port = os.getenv("WEB_PORT", "8080")
+    musetalk_host = os.getenv("MUSETALK_HOST", "localhost")
+    web_host = os.getenv("WEB_HOST", "localhost")
+    
+    print(f"MuseTalk inference server will run on {musetalk_host}:{musetalk_port} (in MuseTestEnv)")
+    print(f"Web interface server will run on {web_host}:{web_port}")
     print("Press Ctrl+C to stop both servers")
     
     # Check if MuseTestEnv exists

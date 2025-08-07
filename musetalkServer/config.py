@@ -2,6 +2,8 @@
 Configuration file for MuseTalk inference server
 """
 
+import os
+
 # Avatar Configuration
 AVATAR_CONFIG = {
     "avatar_id": "1FrameAvatar",
@@ -40,8 +42,8 @@ STREAMING_CONFIG = {
     "video_height": 720
 }
 
-# Server Configuration
+# Server Configuration with environment variable support
 SERVER_CONFIG = {
-    "host": "localhost",
-    "port": 8081  # Different port from webrtc server
+    "host": os.getenv("MUSETALK_HOST", "localhost"),
+    "port": int(os.getenv("MUSETALK_PORT", "8081"))  # Can be overridden with MUSETALK_PORT env var
 }

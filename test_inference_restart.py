@@ -10,7 +10,19 @@ import time
 async def test_inference_restart():
     """Test that inference can be restarted after completion"""
     
-    base_url = "http://localhost:8081"
+    # Load environment variables
+    import os
+    if os.path.exists('.env'):
+        with open('.env', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+    
+    musetalk_host = os.getenv("MUSETALK_HOST", "localhost")
+    musetalk_port = os.getenv("MUSETALK_PORT", "8081")
+    base_url = f"http://{musetalk_host}:{musetalk_port}"
     
     async with aiohttp.ClientSession() as session:
         print("=== Testing Inference Restart Functionality ===")

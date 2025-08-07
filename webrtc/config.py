@@ -2,16 +2,18 @@
 Configuration file for MuseTalk web interface
 """
 
-# MuseTalk Server Configuration
+import os
+
+# MuseTalk Server Configuration with environment variable support
 MUSETALK_SERVER_CONFIG = {
-    "host": "localhost",
-    "port": 8081  # MuseTalk inference server port
+    "host": os.getenv("MUSETALK_HOST", "localhost"),
+    "port": int(os.getenv("MUSETALK_PORT", "8081"))  # Can be overridden with MUSETALK_PORT env var
 }
 
-# Web Server Configuration
+# Web Server Configuration with environment variable support
 WEB_SERVER_CONFIG = {
-    "host": "localhost",
-    "port": 8080  # Web interface server port
+    "host": os.getenv("WEB_HOST", "localhost"),
+    "port": int(os.getenv("WEB_PORT", "8080"))  # Can be overridden with WEB_PORT env var
 }
 
 # Client Configuration

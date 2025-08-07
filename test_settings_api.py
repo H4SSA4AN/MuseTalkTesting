@@ -10,8 +10,19 @@ import json
 async def test_settings_api():
     """Test the settings API endpoints"""
     
-    # Test configuration
-    base_url = "http://localhost:8081"  # MuseTalk server
+    # Load environment variables
+    import os
+    if os.path.exists('.env'):
+        with open('.env', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+    
+    musetalk_host = os.getenv("MUSETALK_HOST", "localhost")
+    musetalk_port = os.getenv("MUSETALK_PORT", "8081")
+    base_url = f"http://{musetalk_host}:{musetalk_port}"  # MuseTalk server
     
     async with aiohttp.ClientSession() as session:
         print("Testing Settings API endpoints...")

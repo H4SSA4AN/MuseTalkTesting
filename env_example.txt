@@ -1,0 +1,14 @@
+# MuseTalk Server Configuration
+# Copy this file to .env and modify the values as needed
+
+# MuseTalk inference server settings
+MUSETALK_HOST=localhost
+MUSETALK_PORT=8081
+
+# Web interface server settings
+WEB_HOST=localhost
+WEB_PORT=8080
+
+# Optional: For remote access, change hosts to 0.0.0.0
+# MUSETALK_HOST=0.0.0.0
+# WEB_HOST=0.0.0.0

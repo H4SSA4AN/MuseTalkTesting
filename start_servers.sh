@@ -2,8 +2,24 @@
 
 echo "Starting MuseTalk with separated servers..."
 echo ""
-echo "MuseTalk inference server will run on port 8081 (in MuseTestEnv)"
-echo "Web interface server will run on port 8080"
+
+# Load environment variables from .env file if it exists
+if [ -f .env ]; then
+    echo "Loading environment variables from .env file..."
+    export $(grep -v '^#' .env | xargs)
+    echo "Environment variables loaded successfully"
+else
+    echo "No .env file found, using default configuration"
+fi
+
+# Get port numbers from environment or use defaults
+MUSETALK_PORT=${MUSETALK_PORT:-8081}
+WEB_PORT=${WEB_PORT:-8080}
+MUSETALK_HOST=${MUSETALK_HOST:-localhost}
+WEB_HOST=${WEB_HOST:-localhost}
+
+echo "MuseTalk inference server will run on $MUSETALK_HOST:$MUSETALK_PORT (in MuseTestEnv)"
+echo "Web interface server will run on $WEB_HOST:$WEB_PORT"
 echo ""
 echo "Press Ctrl+C to stop both servers"
 echo ""
