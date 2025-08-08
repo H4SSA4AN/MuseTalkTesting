@@ -4,6 +4,7 @@ Web interface server for MuseTalk
 
 import sys
 import os
+import datetime
 from aiohttp import web
 import aiohttp
 from config import WEB_SERVER_CONFIG, CLIENT_CONFIG
@@ -162,6 +163,128 @@ async def stream(request):
         status=200,
         headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame"}
     )
+
+
+@routes.post("/save_recording")
+async def save_recording(request):
+    """Save uploaded audio recording to recordings folder"""
+    try:
+        # Create recordings directory if it doesn't exist
+        recordings_dir = "recordings"
+        if not os.path.exists(recordings_dir):
+            os.makedirs(recordings_dir)
+            print(f"Created recordings directory: {recordings_dir}")
+        
+        # Parse the multipart form data
+        reader = await request.multipart()
+        
+        # Find the audio file in the form data
+        audio_file = None
+        async for field in reader:
+            if field.name == 'audio':
+                audio_file = field
+                break
+        
+        if not audio_file:
+            return web.json_response({
+                "success": False,
+                "error": "No audio file found in request"
+            })
+        
+        # Generate filename with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"recording_{timestamp}.wav"
+        filepath = os.path.join(recordings_dir, filename)
+        
+        # Save the audio file
+        with open(filepath, 'wb') as f:
+            while True:
+                chunk = await audio_file.read_chunk()
+                if not chunk:
+                    break
+                f.write(chunk)
+        
+        print(f"Recording saved: {filepath}")
+        
+        return web.json_response({
+            "success": True,
+            "filename": filename,
+            "filepath": filepath
+        })
+        
+    except Exception as e:
+        print(f"Error saving recording: {e}")
+        return web.json_response({
+            "success": False,
+            "error": f"Failed to save recording: {str(e)}"
+        })
+
+
+@routes.get("/list_recordings")
+async def list_recordings(request):
+    """List all saved recordings"""
+    try:
+        recordings_dir = "recordings"
+        if not os.path.exists(recordings_dir):
+            return web.json_response({
+                "success": True,
+                "recordings": []
+            })
+        
+        recordings = []
+        for filename in os.listdir(recordings_dir):
+            if filename.endswith('.wav'):
+                filepath = os.path.join(recordings_dir, filename)
+                file_size = os.path.getsize(filepath)
+                file_time = os.path.getmtime(filepath)
+                
+                recordings.append({
+                    "filename": filename,
+                    "filepath": filepath,
+                    "size": file_size,
+                    "created": file_time
+                })
+        
+        # Sort by creation time (newest first)
+        recordings.sort(key=lambda x: x["created"], reverse=True)
+        
+        return web.json_response({
+            "success": True,
+            "recordings": recordings
+        })
+        
+    except Exception as e:
+        print(f"Error listing recordings: {e}")
+        return web.json_response({
+            "success": False,
+            "error": f"Failed to list recordings: {str(e)}"
+        })
+
+
+@routes.get("/recordings/{filename}")
+async def serve_recording(request):
+    """Serve a specific recording file"""
+    try:
+        filename = request.match_info['filename']
+        recordings_dir = "recordings"
+        filepath = os.path.join(recordings_dir, filename)
+        
+        # Security check: ensure the file is within the recordings directory
+        if not os.path.abspath(filepath).startswith(os.path.abspath(recordings_dir)):
+            return web.Response(text="Access denied", status=403)
+        
+        if not os.path.exists(filepath):
+            return web.Response(text="Recording not found", status=404)
+        
+        # Serve the file
+        return web.FileResponse(filepath, headers={
+            'Content-Type': 'audio/wav',
+            'Content-Disposition': f'inline; filename="{filename}"'
+        })
+        
+    except Exception as e:
+        print(f"Error serving recording: {e}")
+        return web.Response(text="Error serving recording", status=500)
 
 
 def main():

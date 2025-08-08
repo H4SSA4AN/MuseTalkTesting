@@ -132,6 +132,17 @@
             <button id="checkStatusBtn" class="button" onclick="checkStatus()" style="background-color: #28a745; color: white;">Check Status</button>
         </div>
         
+        <div class="controls" style="margin-top: 20px;">
+            <button id="recordBtn" class="button" onclick="toggleRecording()" style="background-color: #dc3545; color: white;">Start Recording</button>
+            <button id="viewRecordingsBtn" class="button" onclick="viewRecordings()" style="background-color: #17a2b8; color: white;">View Recordings</button>
+            <span id="recordingStatus" style="margin-left: 10px; font-weight: bold; color: #dc3545;"></span>
+        </div>
+        
+        <div id="recordingsList" style="display: none; margin-top: 20px;">
+            <h3>Saved Recordings</h3>
+            <div id="recordingsContainer"></div>
+        </div>
+        
         <div id="status">Ready to start inference</div>
         
         <div class="media-container">
@@ -480,6 +491,146 @@
         loadCurrentSettings();
         checkInitialState();
         startPeriodicStatusCheck();
+        
+        // Audio recording functionality
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        
+        async function toggleRecording() {
+            if (!isRecording) {
+                await startRecording();
+            } else {
+                await stopRecording();
+            }
+        }
+        
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    await saveRecording(audioBlob);
+                    
+                    // Stop all tracks to release microphone
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                isRecording = true;
+                
+                document.getElementById('recordBtn').textContent = 'Stop Recording';
+                document.getElementById('recordBtn').style.backgroundColor = '#28a745';
+                document.getElementById('recordingStatus').textContent = 'Recording...';
+                document.getElementById('recordingStatus').style.color = '#dc3545';
+                
+                console.log('Recording started');
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                alert('Error accessing microphone. Please ensure microphone permissions are granted.');
+            }
+        }
+        
+        async function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                
+                document.getElementById('recordBtn').textContent = 'Start Recording';
+                document.getElementById('recordBtn').style.backgroundColor = '#dc3545';
+                document.getElementById('recordingStatus').textContent = 'Saving recording...';
+                document.getElementById('recordingStatus').style.color = '#007bff';
+                
+                console.log('Recording stopped');
+            }
+        }
+        
+        async function saveRecording(audioBlob) {
+            try {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.wav');
+                
+                const response = await fetch('/save_recording', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('recordingStatus').textContent = `Recording saved: ${result.filename}`;
+                    document.getElementById('recordingStatus').style.color = '#28a745';
+                    
+                    // Clear status after 3 seconds
+                    setTimeout(() => {
+                        document.getElementById('recordingStatus').textContent = '';
+                    }, 3000);
+                } else {
+                    document.getElementById('recordingStatus').textContent = 'Error saving recording';
+                    document.getElementById('recordingStatus').style.color = '#dc3545';
+                }
+            } catch (error) {
+                console.error('Error saving recording:', error);
+                document.getElementById('recordingStatus').textContent = 'Error saving recording';
+                document.getElementById('recordingStatus').style.color = '#dc3545';
+            }
+        }
+        
+        async function viewRecordings() {
+            try {
+                const response = await fetch('/list_recordings');
+                const data = await response.json();
+                
+                const recordingsList = document.getElementById('recordingsList');
+                const recordingsContainer = document.getElementById('recordingsContainer');
+                
+                if (data.success) {
+                    if (data.recordings.length === 0) {
+                        recordingsContainer.innerHTML = '<p>No recordings found.</p>';
+                    } else {
+                        let html = '<div style="display: grid; gap: 10px;">';
+                        
+                        data.recordings.forEach(recording => {
+                            const date = new Date(recording.created * 1000).toLocaleString();
+                            const sizeKB = Math.round(recording.size / 1024);
+                            
+                            html += `
+                                <div style="border: 1px solid #ddd; padding: 10px; border-radius: 5px; background-color: #f9f9f9;">
+                                    <div style="font-weight: bold;">${recording.filename}</div>
+                                    <div style="font-size: 12px; color: #666;">
+                                        Created: ${date} | Size: ${sizeKB} KB
+                                    </div>
+                                    <audio controls style="width: 100%; margin-top: 5px;">
+                                        <source src="recordings/${recording.filename}" type="audio/wav">
+                                        Your browser does not support the audio element.
+                                    </audio>
+                                </div>
+                            `;
+                        });
+                        
+                        html += '</div>';
+                        recordingsContainer.innerHTML = html;
+                    }
+                    
+                    recordingsList.style.display = 'block';
+                } else {
+                    console.error('Error loading recordings:', data.error);
+                    recordingsContainer.innerHTML = '<p>Error loading recordings.</p>';
+                    recordingsList.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Error viewing recordings:', error);
+                document.getElementById('recordingsContainer').innerHTML = '<p>Error loading recordings.</p>';
+                document.getElementById('recordingsList').style.display = 'block';
+            }
+        }
     </script>
 </body>
 </html> 
