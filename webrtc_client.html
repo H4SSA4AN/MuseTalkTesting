@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MuseTalk WebRTC Client</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    h1 { margin: 0 0 12px; }
+    #status { margin: 8px 0 12px; padding: 8px 12px; background: #f1f5f9; border-radius: 6px; }
+    button { padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; background: #2563eb; color: #fff; }
+    video { width: 100%; max-width: 720px; background: #000; border-radius: 8px; margin-top: 12px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"] { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; min-width: 320px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MuseTalk WebRTC Client</h1>
+    <div class="row">
+      <input id="serverUrl" type="text" placeholder="Server base (e.g., http://localhost:8090)" />
+      <button id="startBtn">Start Inference & Stream</button>
+    </div>
+    <div id="status">Idle</div>
+    <video id="v" autoplay playsinline></video>
+  </div>
+
+  <script>
+  function resolveUrl(base, path) {
+    try {
+      const u = new URL(base);
+      u.pathname = path;
+      return u.toString();
+    } catch {
+      return path;
+    }
+  }
+
+  async function start() {
+    const statusEl = document.getElementById('status');
+    const base = document.getElementById('serverUrl').value.trim() || window.location.origin;
+    const video = document.getElementById('v');
+    try {
+      statusEl.textContent = 'Uploading sample audio...';
+      const up = await fetch(resolveUrl(base, '/upload_sample'));
+      if (!up.ok) throw new Error('Failed to upload sample');
+
+      statusEl.textContent = 'Creating WebRTC offer...';
+      const pc = new RTCPeerConnection();
+      pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
+      const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false });
+      await pc.setLocalDescription(offer);
+
+      statusEl.textContent = 'Sending offer...';
+      const resp = await fetch(resolveUrl(base, '/offer'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdp: offer.sdp, type: offer.type })
+      });
+      if (!resp.ok) throw new Error('Offer failed');
+      const ans = await resp.json();
+
+      statusEl.textContent = 'Applying answer...';
+      await pc.setRemoteDescription({ type: ans.type || 'answer', sdp: ans.sdp });
+      statusEl.textContent = 'Streaming...';
+    } catch (e) {
+      statusEl.textContent = 'Error: ' + (e && e.message ? e.message : e);
+    }
+  }
+
+  document.getElementById('startBtn').addEventListener('click', start);
+  </script>
+</body>
+  
+</html>
+
+

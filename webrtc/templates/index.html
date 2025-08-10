@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Live Frame Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        #startBtn {
+            padding: 15px 30px;
+            font-size: 18px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #startBtn:hover {
+            background-color: #0056b3;
+        }
+        #startBtn:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        #status {
+            margin: 20px 0;
+            font-weight: bold;
+            text-align: center;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #e9ecef;
+        }
+        .media-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+        #videoStream {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        #audioPlayer {
+            margin: 20px 0;
+            width: 100%;
+            max-width: 500px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Live Frame Stream (MJPEG)</h1>
+        
+        <div class="controls">
+            <button id="startBtn" onclick="startInference()">Start Inference</button>
+        </div>
+        
+        <div id="status">Ready to start inference</div>
+        
+        <div class="media-container">
+            <img id="videoStream" src="" style="display: none;" />
+            <audio id="audioPlayer" controls style="display: none;">
+                <source src="/audio" type="audio/wav">
+                Your browser does not support the audio element.
+            </audio>
+        </div>
+    </div>
+    
+    <script>
+        let streamStarted = false;
+        
+        function startInference() {
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('startBtn').textContent = 'Starting...';
+            document.getElementById('status').textContent = 'Starting inference...';
+            
+            fetch('/start')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('status').textContent = 'Inference started! Buffering frames...';
+                        // Start showing the video stream after a short delay
+                        setTimeout(() => {
+                            document.getElementById('videoStream').src = '/stream';
+                            document.getElementById('videoStream').style.display = 'block';
+                            document.getElementById('status').textContent = 'Streaming frames...';
+                            
+                            // Start checking for stream readiness
+                            checkStreamReady();
+                        }, 1000);
+                    } else {
+                        document.getElementById('status').textContent = 'Error: ' + data.error;
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('startBtn').textContent = 'Start Inference';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('status').textContent = 'Error: ' + error;
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('startBtn').textContent = 'Start Inference';
+                });
+        }
+        
+        function checkStreamReady() {
+            if (streamStarted) return;
+            
+            fetch('/stream_status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.stream_ready && !streamStarted) {
+                        streamStarted = true;
+                        document.getElementById('status').textContent = 'Stream ready! Starting audio...';
+                        
+                        // Show and start audio player
+                        const audioPlayer = document.getElementById('audioPlayer');
+                        audioPlayer.style.display = 'block';
+                        audioPlayer.play().then(() => {
+                            document.getElementById('status').textContent = 'Streaming with audio!';
+                        }).catch(error => {
+                            console.log('Audio autoplay failed:', error);
+                            document.getElementById('status').textContent = 'Streaming with audio (click play to start audio)';
+                        });
+                    } else if (!data.inference_complete) {
+                        // Check again in 500ms
+                        setTimeout(checkStreamReady, 500);
+                    }
+                })
+                .catch(error => {
+                    console.log('Error checking stream status:', error);
+                    // Check again in 1 second
+                    setTimeout(checkStreamReady, 1000);
+                });
+        }
+    </script>
+</body>
+</html> 
