@@ -21,3 +21,5 @@ moviepy
 aiortc==1.9.0
 aiohttp
 av
+pyinotify
+pathlib2

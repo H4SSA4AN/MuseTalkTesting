@@ -20,6 +20,7 @@ from av import VideoFrame
 from omegaconf import OmegaConf
 from transformers import WhisperModel
 from fractions import Fraction
+import pathlib
 
 # MuseTalk imports
 from musetalk.utils.audio_processor import AudioProcessor
@@ -27,6 +28,7 @@ from musetalk.utils.blending import get_image_blending, get_image_prepare_materi
 from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.utils import datagen, load_all_model
+from musetalk.utils.file_handler import FileHandler, FileWatcher
 
 
 class MuseTalkRealtimeEngine:
@@ -329,22 +331,28 @@ class MuseTalkWebRTCServer:
     ) -> None:
         self.fps = fps
         self.answer_wav_path = None
-        # Uploaded answers directory
-        self.answers_dir = os.path.join(os.path.dirname(__file__), "answers")
-        os.makedirs(self.answers_dir, exist_ok=True)
+        
+        # Initialize improved file handling
+        self._base_dir = os.path.dirname(__file__)
+        self.file_handler = FileHandler(self._base_dir, "answers")
+        
+        # Verify permissions on startup
+        if not self.file_handler.check_permissions():
+            raise RuntimeError("Cannot access answers directory - check permissions")
+        
         # Clear answers folder on startup
-        self._clear_answers_dir()
-        print(f"[MuseTalk] Cleared answers directory: {self.answers_dir}")
+        self.file_handler.clear_directory()
+        print(f"[MuseTalk] Cleared answers directory: {self.file_handler.answers_dir}")
+        
         # New-answer signal
         self.answer_event: asyncio.Event = asyncio.Event()
         self.latest_answer_path: Optional[str] = None
-        # Directory watcher managed on a separate thread
-        self._answers_watcher_thread: Optional[threading.Thread] = None
-        self._stop_watcher: bool = False
+        
+        # Improved file watcher
+        self._file_watcher: Optional[FileWatcher] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._rt_proc: Optional[subprocess.Popen] = None  # deprecated external run
         self._warm_infer_thread: Optional[threading.Thread] = None
-        self._base_dir = os.path.dirname(__file__)
 
         # Read realtime.yaml to configure avatar and audio path
         self.avatar_video_path, self.bbox_shift, self.config_audio_path = _load_realtime_config_defaults(avatar_video_path, bbox_shift)
@@ -368,12 +376,12 @@ class MuseTalkWebRTCServer:
     async def _push_frames(self, frame_queue: "asyncio.Queue[VideoFrame]"):
         # Use audio path from realtime.yaml if available; otherwise fallback to latest uploaded
         source_path: Optional[str] = self.config_audio_path
-        if source_path and not os.path.exists(source_path):
+        if source_path and not pathlib.Path(source_path).exists():
             # Wait for watcher/upload to create or update it
             await self.answer_event.wait()
-        if not source_path or not os.path.exists(source_path):
+        if not source_path or not pathlib.Path(source_path).exists():
             # Fallback to latest detected
-            if self.latest_answer_path is None or not os.path.exists(self.latest_answer_path):
+            if self.latest_answer_path is None or not pathlib.Path(self.latest_answer_path).exists():
                 await self.answer_event.wait()
             source_path = self.latest_answer_path
 
@@ -495,36 +503,51 @@ class MuseTalkWebRTCServer:
         )
 
     async def upload_answer(self, request: web.Request) -> web.Response:
-        reader = await request.multipart()
-        field = await reader.next()
-        if field is None or field.name != "file":
-            # Support raw body as wav
-            raw = await request.read()
-            if not raw:
-                return web.json_response({"ok": False, "error": "no file"}, status=400)
-            filename = f"Answer_{int(time.time()*1000)}.wav"
-            save_path = os.path.join(self.answers_dir, filename)
-            with open(save_path, "wb") as f:
-                f.write(raw)
-        else:
-            filename = field.filename or f"Answer_{int(time.time()*1000)}.wav"
-            save_path = os.path.join(self.answers_dir, filename)
-            with open(save_path, "wb") as f:
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            
+            if field is None or field.name != "file":
+                # Support raw body as wav
+                raw = await request.read()
+                if not raw:
+                    return web.json_response({"ok": False, "error": "no file"}, status=400)
+                
+                # Use improved file handler
+                file_path = self.file_handler.save_audio_file(raw)
+                filename = file_path.name
+            else:
+                # Handle multipart file upload
+                filename = field.filename or f"Answer_{int(time.time()*1000)}.wav"
+                raw = b""
                 while True:
                     chunk = await field.read_chunk()
                     if not chunk:
                         break
-                    f.write(chunk)
-        self.latest_answer_path = save_path
-        self.answer_event.set()
-        print(f"[MuseTalk] Uploaded answer received: {save_path}")
-        # Do not clear the event; allow multiple consumers until a new upload overwrites latest path
-        return web.json_response({"ok": True, "path": os.path.basename(save_path)})
+                    raw += chunk
+                
+                # Use improved file handler
+                file_path = self.file_handler.save_audio_file(raw, filename)
+            
+            self.latest_answer_path = str(file_path)
+            self.answer_event.set()
+            print(f"[MuseTalk] Uploaded answer received: {file_path}")
+            # Do not clear the event; allow multiple consumers until a new upload overwrites latest path
+            return web.json_response({"ok": True, "path": file_path.name})
+            
+        except PermissionError as e:
+            print(f"[MuseTalk] Permission error uploading file: {e}")
+            return web.json_response({"ok": False, "error": "permission denied"}, status=500)
+        except Exception as e:
+            print(f"[MuseTalk] Error uploading file: {e}")
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def health(self, request: web.Request) -> web.Response:
         return web.json_response({
             "status": "ok",
-            "have_answer": bool(self.latest_answer_path and os.path.exists(self.latest_answer_path)),
+            "have_answer": bool(self.latest_answer_path and pathlib.Path(self.latest_answer_path).exists()),
+            "answers_dir": str(self.file_handler.answers_dir),
+            "permissions_ok": self.file_handler.check_permissions(),
         })
 
     async def test_page(self, request: web.Request) -> web.Response:
@@ -580,76 +603,52 @@ class MuseTalkWebRTCServer:
             sample = os.path.join(os.path.dirname(__file__), "data", "audio", "RealTimeAudioTest.wav")
             if not os.path.exists(sample):
                 return web.json_response({"ok": False, "error": "sample audio not found"}, status=404)
-            filename = f"Answer_sample_{int(time.time()*1000)}.wav"
-            save_path = os.path.join(self.answers_dir, filename)
-            # Copy file contents
-            with open(sample, "rb") as src, open(save_path, "wb") as dst:
-                dst.write(src.read())
-            self.latest_answer_path = save_path
+            
+            # Read sample file
+            with open(sample, "rb") as src:
+                audio_data = src.read()
+            
+            # Use improved file handler
+            file_path = self.file_handler.save_audio_file(audio_data, f"Answer_sample_{int(time.time()*1000)}.wav")
+            
+            self.latest_answer_path = str(file_path)
             self.answer_event.set()
-            print(f"[MuseTalk] Sample answer staged: {save_path}")
-            return web.json_response({"ok": True, "path": os.path.basename(save_path)})
+            print(f"[MuseTalk] Sample answer staged: {file_path}")
+            return web.json_response({"ok": True, "path": file_path.name})
+        except PermissionError as e:
+            print(f"[MuseTalk] Permission error uploading sample: {e}")
+            return web.json_response({"ok": False, "error": "permission denied"}, status=500)
         except Exception as e:
+            print(f"[MuseTalk] Error uploading sample: {e}")
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def _start_background_tasks(self, app: web.Application):
-        # Capture running loop and start a dedicated watcher thread
+        # Capture running loop and start improved file watcher
         self._loop = asyncio.get_running_loop()
-        self._stop_watcher = False
-        self._answers_watcher_thread = threading.Thread(
-            target=self._watch_answers_dir_thread, daemon=True
-        )
-        self._answers_watcher_thread.start()
-        print(f"[MuseTalk] Answers watcher thread started on {self.answers_dir}")
+        
+        # Initialize file watcher with callback
+        def on_new_audio_file(file_path: pathlib.Path):
+            """Callback when new audio file is detected."""
+            self.latest_answer_path = str(file_path)
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self.answer_event.set)
+            print(f"[MuseTalk] Detected new answer file: {file_path}")
+            # Begin modified internal inference immediately (logs show progress)
+            try:
+                self._begin_modified_inference(str(file_path))
+            except Exception as e:
+                print(f"[MuseTalk] Failed to start internal inference: {e}")
+        
+        self._file_watcher = FileWatcher(self.file_handler.answers_dir, on_new_audio_file)
+        self._file_watcher.start()
+        print(f"[MuseTalk] File watcher started on {self.file_handler.answers_dir}")
 
     async def _cleanup_background_tasks(self, app: web.Application):
-        if self._answers_watcher_thread is not None:
-            self._stop_watcher = True
-            self._answers_watcher_thread.join(timeout=2.0)
-            print("[MuseTalk] Answers watcher thread stopped")
+        if self._file_watcher is not None:
+            self._file_watcher.stop()
+            print("[MuseTalk] File watcher stopped")
 
-    def _watch_answers_dir_thread(self):
-        """Threaded watcher; signals the asyncio event via loop.call_soon_threadsafe."""
-        last_seen: Optional[str] = None
-        last_mtime: float = 0.0
-        while not self._stop_watcher:
-            try:
-                files = [f for f in os.listdir(self.answers_dir) if f.lower().endswith('.wav')]
-                if files:
-                    abs_files = [os.path.join(self.answers_dir, f) for f in files]
-                    abs_files.sort(key=lambda p: os.path.getmtime(p))
-                    newest = abs_files[-1]
-                    mtime = os.path.getmtime(newest)
-                    if newest != last_seen or mtime > last_mtime:
-                        last_seen = newest
-                        last_mtime = mtime
-                        self.latest_answer_path = newest
-                        if self._loop is not None:
-                            self._loop.call_soon_threadsafe(self.answer_event.set)
-                        print(f"[MuseTalk] Detected new answer file: {newest}")
-                        # Begin modified internal inference immediately (logs show progress)
-                        try:
-                            self._begin_modified_inference(newest)
-                        except Exception as e:
-                            print(f"[MuseTalk] Failed to start internal inference: {e}")
-                time.sleep(0.3)
-            except Exception as e:
-                print(f"[MuseTalk] Answers watcher error: {e}")
-                time.sleep(1.0)
 
-    def _clear_answers_dir(self):
-        try:
-            for name in os.listdir(self.answers_dir):
-                path = os.path.join(self.answers_dir, name)
-                try:
-                    if os.path.isfile(path) or os.path.islink(path):
-                        os.remove(path)
-                    elif os.path.isdir(path):
-                        shutil.rmtree(path)
-                except Exception as e:
-                    print(f"[MuseTalk] Failed to remove {path}: {e}")
-        except Exception as e:
-            print(f"[MuseTalk] Failed to clear answers dir {self.answers_dir}: {e}")
 
     def _start_realtime_inference(self):
         """Launch the standard realtime_inference.py with skip_save_images and realtime.yaml."""
@@ -677,6 +676,13 @@ class MuseTalkWebRTCServer:
             try:
                 batch_size = 20
                 fps = self.fps
+                
+                # Verify file exists before processing
+                audio_file_path = pathlib.Path(audio_path)
+                if not audio_file_path.exists():
+                    print(f"[MuseTalk] [Warm] Audio file not found: {audio_path}")
+                    return
+                    
                 print(f"[MuseTalk] [Warm] Preparing audio features for {audio_path}")
                 whisper_input_features, librosa_length = self.engine.audio_processor.get_audio_feature(
                     audio_path, weight_dtype=self.engine.weight_dtype
