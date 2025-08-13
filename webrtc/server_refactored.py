@@ -120,6 +120,7 @@ async def start_inference(request):
 
     # --- Thread 1: GPU Inference (Producer) ---
     def start_inference_thread():
+        inference_start = time.time()
         print(f"[GPU Thread] Starting inference (FPS: {fps}, Batch Size: {batch_size})")
         try:
             avatar = avatar_manager.get_avatar()
@@ -131,9 +132,15 @@ async def start_inference(request):
                 batch_size,
                 frame_queue
             )
-            print("[GPU Thread] Inference completed.")
+            inference_end = time.time()
+            inference_time = inference_end - inference_start
+            print(f"[GPU Thread] Inference completed.")
+            print(f"[Timer] Total inference time: {inference_time:.2f} seconds")
         except Exception as e:
+            inference_end = time.time()
+            inference_time = inference_end - inference_start
             print(f"[GPU Thread] Error during inference: {e}")
+            print(f"[Timer] Inference failed after: {inference_time:.2f} seconds")
             import traceback
             traceback.print_exc()
             frame_queue.put(None) # Ensure processor thread terminates on error
