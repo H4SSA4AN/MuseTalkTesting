@@ -15,6 +15,13 @@ import time
 import librosa
 import math
 
+# Import enhanced CORS
+try:
+    from .enhanced_cors import create_simple_cors_middleware
+except ImportError:
+    # Fallback for direct script execution
+    from enhanced_cors import create_simple_cors_middleware
+
 routes = web.RouteTableDef()
 
 # Global frame buffer and streaming state
@@ -368,7 +375,11 @@ async def stream(request):
         "Content-Type": "multipart/x-mixed-replace; boundary=frame"
     })
 
+# Create enhanced CORS middleware
+cors_middleware = create_simple_cors_middleware()
+
 app = web.Application()
+app.middlewares.append(cors_middleware)
 app.add_routes(routes)
 
 if __name__ == "__main__":

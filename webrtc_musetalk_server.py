@@ -22,6 +22,13 @@ from transformers import WhisperModel
 from fractions import Fraction
 import pathlib
 
+# Import enhanced CORS
+try:
+    from webrtc.enhanced_cors import create_simple_cors_middleware
+except ImportError:
+    # Fallback for direct script execution
+    from enhanced_cors import create_simple_cors_middleware
+
 # MuseTalk imports
 from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.blending import get_image_blending, get_image_prepare_material
@@ -359,7 +366,11 @@ class MuseTalkWebRTCServer:
         self.engine = MuseTalkRealtimeEngine()
         self.engine.prepare_avatar(video_path=self.avatar_video_path, bbox_shift=self.bbox_shift)
 
+        # Create enhanced CORS middleware
+        cors_middleware = create_simple_cors_middleware()
+        
         self.web_app = web.Application()
+        self.web_app.middlewares.append(cors_middleware)
         self.web_app.add_routes([
             web.post("/offer", self.offer),
             web.post("/upload_answer", self.upload_answer),
