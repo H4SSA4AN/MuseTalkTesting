@@ -72,27 +72,6 @@
         
         <div class="controls">
             <button id="startBtn" onclick="startInference()">Start Inference</button>
-            <button id="uploadBtn" onclick="showUploadForm()" style="margin-left: 10px; padding: 15px 30px; font-size: 18px; background-color: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer;">Upload Audio</button>
-        </div>
-        
-        <div id="uploadForm" style="display: none; margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 5px;">
-            <h3>Upload Audio File</h3>
-            <form id="audioUploadForm" enctype="multipart/form-data">
-                <div style="margin: 10px 0;">
-                    <label for="audioFile">Audio File (wav, mp3, m4a, flac, ogg):</label><br>
-                    <input type="file" id="audioFile" name="audio" accept=".wav,.mp3,.m4a,.flac,.ogg" required style="margin: 5px 0;">
-                </div>
-                <div style="margin: 10px 0;">
-                    <label for="fpsInput">FPS (optional):</label><br>
-                    <input type="number" id="fpsInput" name="fps" min="1" max="60" value="25" style="margin: 5px 0; padding: 5px;">
-                </div>
-                <div style="margin: 10px 0;">
-                    <label for="batchSizeInput">Batch Size (optional):</label><br>
-                    <input type="number" id="batchSizeInput" name="batch_size" min="1" max="16" value="4" style="margin: 5px 0; padding: 5px;">
-                </div>
-                <button type="submit" style="padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">Upload & Start Inference</button>
-                <button type="button" onclick="hideUploadForm()" style="margin-left: 10px; padding: 10px 20px; background-color: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer;">Cancel</button>
-            </form>
         </div>
         
         <div id="status">Ready to start inference</div>
@@ -108,69 +87,6 @@
     
     <script>
         let streamStarted = false;
-        
-        function showUploadForm() {
-            document.getElementById('uploadForm').style.display = 'block';
-        }
-        
-        function hideUploadForm() {
-            document.getElementById('uploadForm').style.display = 'none';
-        }
-        
-        // Handle audio upload form submission
-        document.getElementById('audioUploadForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData();
-            const audioFile = document.getElementById('audioFile').files[0];
-            const fps = document.getElementById('fpsInput').value;
-            const batchSize = document.getElementById('batchSizeInput').value;
-            
-            if (!audioFile) {
-                alert('Please select an audio file');
-                return;
-            }
-            
-            formData.append('audio', audioFile);
-            formData.append('fps', fps);
-            formData.append('batch_size', batchSize);
-            
-            // Disable buttons and show status
-            document.getElementById('startBtn').disabled = true;
-            document.getElementById('uploadBtn').disabled = true;
-            document.getElementById('status').textContent = 'Uploading audio and starting inference...';
-            
-            fetch('/upload-audio', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    document.getElementById('status').textContent = `Audio uploaded! Duration: ${data.duration.toFixed(2)}s. Starting inference...`;
-                    hideUploadForm();
-                    
-                    // Start showing the video stream after a short delay
-                    setTimeout(() => {
-                        document.getElementById('videoStream').src = '/stream';
-                        document.getElementById('videoStream').style.display = 'block';
-                        document.getElementById('status').textContent = 'Streaming frames...';
-                        
-                        // Start checking for stream readiness
-                        checkStreamReady();
-                    }, 1000);
-                } else {
-                    document.getElementById('status').textContent = 'Error: ' + data.error;
-                    document.getElementById('startBtn').disabled = false;
-                    document.getElementById('uploadBtn').disabled = false;
-                }
-            })
-            .catch(error => {
-                document.getElementById('status').textContent = 'Error: ' + error;
-                document.getElementById('startBtn').disabled = false;
-                document.getElementById('uploadBtn').disabled = false;
-            });
-        });
         
         function startInference() {
             document.getElementById('startBtn').disabled = true;
