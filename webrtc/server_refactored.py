@@ -69,18 +69,10 @@ async def start_inference(request):
     global state, avatar_manager, streaming_handler
     
     if state.inference_triggered:
-        return web.json_response({"success": False, "error": "Inference already started"}, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return web.json_response({"success": False, "error": "Inference already started"})
     
     if not avatar_manager.is_ready():
-        return web.json_response({"success": False, "error": "Avatar not ready. Please wait for initialization to complete."}, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return web.json_response({"success": False, "error": "Avatar not ready. Please wait for initialization to complete."})
 
     try:
         data = await request.json()
@@ -208,10 +200,6 @@ async def start_inference(request):
         "success": True, 
         "message": "Inference started",
         "fps": fps
-    }, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
     })
 
 
@@ -238,10 +226,6 @@ async def health(request):
         "server": "MuseTalk WebRTC",
         "avatar_ready": avatar_manager.is_ready(),
         "streaming_ready": state.stream_ready if state else False
-    }, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
     })
 
 
@@ -256,10 +240,6 @@ async def stream_status(request):
         "inference_triggered": state.inference_triggered,
         "fps": avatar_manager.get_fps(),
         "inference_end_time": state.inference_end_time
-    }, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
     })
 
 
@@ -276,11 +256,7 @@ async def upload_answer(request: web.Request) -> web.Response:
             # Support raw body as wav
             raw = await request.read()
             if not raw:
-                return web.json_response({"ok": False, "error": "no file"}, status=400, headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "*"
-                })
+                return web.json_response({"ok": False, "error": "no file"}, status=400)
             filename = f"Answer_{int(time.time()*1000)}.wav"
         else:
             filename = field.filename or f"Answer_{int(time.time()*1000)}.wav"
@@ -305,110 +281,17 @@ async def upload_answer(request: web.Request) -> web.Response:
         current_audio_path = save_path
         print(f"[MuseTalk] Uploaded answer received: {save_path}")
         
-        return web.json_response({"ok": True, "path": os.path.basename(save_path)}, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return web.json_response({"ok": True, "path": os.path.basename(save_path)})
         
     except Exception as e:
         print(f"[MuseTalk] Upload error: {e}")
-        return web.json_response({"ok": False, "error": str(e)}, status=500, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
-@routes.options("/stream")
-async def stream_options(request):
-    """Handle CORS preflight for stream endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
 
 
-@routes.options("/start")
-async def start_options(request):
-    """Handle CORS preflight for start endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
 
 
-@routes.options("/upload_answer")
-async def upload_answer_options(request):
-    """Handle CORS preflight for upload_answer endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
-
-
-@routes.options("/stream_status")
-async def stream_status_options(request):
-    """Handle CORS preflight for stream_status endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
-
-
-@routes.options("/health")
-async def health_options(request):
-    """Handle CORS preflight for health endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
-
-
-@routes.options("/stream")
-async def stream_options(request):
-    """Handle CORS preflight for stream endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
-
-
-@routes.options("/stream_ready")
-async def stream_ready_options(request):
-    """Handle CORS preflight for stream_ready endpoint"""
-    return web.Response(
-        status=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
 
 
 @routes.post("/reset")
@@ -447,11 +330,7 @@ async def stream(request):
     print(f"[Stream] Stream request received. State: streaming_started={state.streaming_started}, stream_ready={state.stream_ready}, inference_complete={state.inference_complete}")
     
     if not state.streaming_started:
-        return web.Response(text="Inference not started", status=400, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return web.Response(text="Inference not started", status=400)
 
     # Wait until stream is ready with timeout
     wait_count = 0
@@ -465,25 +344,18 @@ async def stream(request):
         # Timeout after max_wait_time seconds
         if wait_count >= max_wait_time * 10:  # 0.1s intervals
             print(f"[Stream] Timeout waiting for stream to be ready after {max_wait_time} seconds")
-            return web.Response(text="Stream timeout", status=408, headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, OPTIONS",
-                "Access-Control-Allow-Headers": "*"
-            })
+            return web.Response(text="Stream timeout", status=408)
     
     print(f"[Stream] Beginning stream (audio length: {state.audio_length:.2f}s, buffer_size={state.get_buffer_size()})")
     
     # Notify Mini-Omni server that streaming is ready
     await notify_mini_omni_stream_ready()
 
-    # Create a streaming response with proper CORS headers
+    # Create a streaming response
     response = web.StreamResponse(
         status=200,
         headers={
             "Content-Type": "multipart/x-mixed-replace; boundary=frame",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"  # Disable proxy buffering
@@ -494,11 +366,7 @@ async def stream(request):
         await response.prepare(request)
     except Exception as e:
         print(f"[Stream] Error preparing response: {e}")
-        return web.Response(text="Stream preparation failed", status=500, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        })
+        return web.Response(text="Stream preparation failed", status=500)
     
     # Stream the MJPEG data with robust error handling
     try:
@@ -573,10 +441,6 @@ async def check_stream_ready(request):
         "streaming_started": state.streaming_started,
         "inference_triggered": state.inference_triggered,
         "buffer_size": state.get_buffer_size()
-    }, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
     })
 
 
@@ -603,10 +467,6 @@ async def test_frames(request):
         "status": "success",
         "message": "Added 5 test frames to buffer",
         "buffer_size": state.get_buffer_size()
-    }, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "*"
     })
 
 
@@ -675,32 +535,7 @@ def initialize_server():
     return True
 
 
-async def cors_middleware(app, handler):
-    """CORS middleware to handle all requests"""
-    async def middleware(request):
-        # Handle preflight requests
-        if request.method == 'OPTIONS':
-            return web.Response(
-                status=200,
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "*",
-                    "Access-Control-Max-Age": "86400"
-                }
-            )
-        
-        # Handle actual requests
-        response = await handler(request)
-        
-        # Add CORS headers to all responses
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        
-        return response
-    
-    return middleware
+
 
 
 def main():
@@ -727,7 +562,6 @@ def main():
     
     # Create and configure the web application
     app = web.Application()
-    app.middlewares.append(cors_middleware)
     app.add_routes(routes)
     
     # Start the server
