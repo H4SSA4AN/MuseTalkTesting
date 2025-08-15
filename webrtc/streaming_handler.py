@@ -93,44 +93,62 @@ class StreamingHandler:
         )
     
     async def mjpeg_response(self):
-        """Generate MJPEG response for streaming"""
+        """Generate MJPEG response - send entire buffer first, then new frames"""
         boundary = "frame"
-        frame_delay = 1.0 / self.avatar_manager.get_fps()
-        start_time = asyncio.get_event_loop().time()
         frame_count = 0
         
         print(f"[MJPEG] Starting MJPEG response. Initial buffer size: {self.state.get_buffer_size()}")
         
         try:
+            # Phase 1: Send entire initial buffer as quickly as possible
+            initial_buffer_size = self.state.get_buffer_size()
+            if initial_buffer_size > 0:
+                print(f"[MJPEG] Sending entire initial buffer ({initial_buffer_size} frames)")
+                
+                # Send all frames in buffer immediately
+                while self.state.get_buffer_size() > 0:
+                    frame = self.state.get_frame_from_buffer()
+                    if frame is not None:
+                        frame_count += 1
+                        
+                        # Convert numpy frame to JPEG
+                        ret, jpeg = cv2.imencode('.jpg', frame)
+                        if not ret:
+                            continue
+                        
+                        # Create the MJPEG chunk
+                        chunk = (b"--" + boundary.encode() + b"\r\n"
+                                b"Content-Type: image/jpeg\r\n"
+                                b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg.tobytes() + b"\r\n")
+                        
+                        yield chunk
+                
+                print(f"[MJPEG] Initial buffer sent. Frame count: {frame_count}")
+                print(f"[MJPEG] Buffer size after sending: {self.state.get_buffer_size()}")
+            
+            # Phase 2: Wait for new frames and serve them as they arrive
+            print(f"[MJPEG] Starting Phase 2 - waiting for new frames")
             while True:
-                # Wait for frames to be available in buffer
+                # Wait for new frames to be available
                 wait_count = 0
                 while self.state.get_buffer_size() == 0 and not self.state.inference_complete:
                     await asyncio.sleep(0.01)
                     wait_count += 1
                     if wait_count % 1000 == 0:  # Print every 10 seconds
-                        print(f"[MJPEG] Waiting for frames... buffer_size={self.state.get_buffer_size()}, inference_complete={self.state.inference_complete}")
+                        print(f"[MJPEG] Waiting for new frames... buffer_size={self.state.get_buffer_size()}, inference_complete={self.state.inference_complete}")
                 
-                # Get frame from buffer
+                # Get new frame from buffer
                 frame = self.state.get_frame_from_buffer()
                 if frame is None:
                     # Check if inference is complete and no more frames
                     if self.state.inference_complete:
-                        print(f"[MJPEG] Inference complete, no more frames. Frame count: {frame_count}")
+                        print(f"[MJPEG] Inference complete, no more frames. Total frame count: {frame_count}")
                         break
                     else:
                         # Still waiting for frames, continue
                         continue
                 
                 frame_count += 1
-                
-                # Calculate when this frame should be displayed
-                target_time = start_time + (frame_count * frame_delay)
-                current_time = asyncio.get_event_loop().time()
-                
-                # Wait if we're ahead of schedule
-                if current_time < target_time:
-                    await asyncio.sleep(target_time - current_time)
                 
                 # Convert numpy frame to JPEG
                 ret, jpeg = cv2.imencode('.jpg', frame)
@@ -146,7 +164,7 @@ class StreamingHandler:
                 
                 # If inference is complete and we've processed all frames, break
                 if self.state.inference_complete and self.state.get_buffer_size() == 0:
-                    print(f"[MJPEG] All frames processed, ending stream. Frame count: {frame_count}")
+                    print(f"[MJPEG] All frames processed, ending stream. Total frame count: {frame_count}")
                     break
                 
         except Exception as e:
