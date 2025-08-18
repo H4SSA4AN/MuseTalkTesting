@@ -18,3 +18,7 @@ imageio[ffmpeg]
 omegaconf
 ffmpeg-python
 moviepy
+
+# Service dependencies
+flask==3.0.0
+werkzeug==3.0.1
