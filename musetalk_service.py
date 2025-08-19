@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import queue
+import base64
 from pathlib import Path
 from typing import Optional, Dict, Any
 import requests
@@ -49,9 +50,23 @@ class MuseTalkService:
         
         self.config = OmegaConf.load(config_path)
         self.config_path = config_path  # Store config path for later use
-        self.frame_queue = queue.Queue()
+        
+        # Threading and processing control
         self.processing = False
         self.frame_count = 0
+        
+        # Phase control for streaming
+        self.phase1_complete = False  # Phase 1: Send initial buffer
+        self.phase2_active = False    # Phase 2: Send subsequent batches
+        
+        # Frame storage - single buffer that grows over time
+        self.frame_buffer = []  # Single buffer for all processed frames
+        self.buffer_lock = threading.Lock()  # Thread safety for buffer operations
+        
+        # Streaming control
+        self.estimated_finish_time = float('inf')
+        self.audio_duration = 0
+        self.stream_url = None
         
         # Create inputs folder if it doesn't exist
         self.inputs_dir = "inputs"
@@ -154,19 +169,44 @@ class MuseTalkService:
         print(f"Audio saved to: {input_path}")
         return input_path
     
-    def process_audio_with_video(self, audio_path: str, video_path: str, 
-                                stream_url: str, bbox_shift: int = 0) -> Dict[str, Any]:
-        """Process audio with video and stream frames to specified URL using realtime.yaml config"""
+    def process_audio_with_video(self, stream_url: str, fps: int = 25, batch_size: int = 20, 
+                                bbox_shift: int = 0) -> Dict[str, Any]:
+        """Process audio with video and stream frames to specified URL using realtime.yaml config.
+        
+        Args:
+            stream_url: URL to stream the generated frames to
+            fps: Frames per second for inference (default: 25)
+            batch_size: Batch size for inference (default: 20)
+            bbox_shift: Bounding box shift value (default: 0)
+            
+        Returns:
+            Dict containing status and processing information
+        """
         try:
             # Load realtime.yaml configuration
             inference_config = OmegaConf.load(self.config_path)
             print(f"Using inference config: {inference_config}")
             
+            # Get video_path and audio_path from configuration
+            video_path = inference_config.get("1FrameAvatar", {}).get("video_path")
+            audio_clips = inference_config.get("1FrameAvatar", {}).get("audio_clips", {})
+            
+            # Get the first audio clip (assuming there's at least one)
+            if not audio_clips:
+                raise ValueError("No audio clips found in configuration")
+            
+            # Get the first audio file from the clips
+            audio_path = list(audio_clips.values())[0]
+            
+            if not video_path or not audio_path:
+                raise ValueError("video_path or audio_path not found in configuration")
+            
+            print(f"Using video_path from config: {video_path}")
+            print(f"Using audio_path from config: {audio_path}")
+            
             # Get default parameters from realtime_inference.py
-            fps = 25  # Default FPS for realtime inference
             audio_padding_length_left = 2
             audio_padding_length_right = 2
-            batch_size = 20  # Default batch size for realtime inference
             extra_margin = 10  # For v15, add extra margin
             parsing_mode = "jaw"  # Default parsing mode for v15
             
@@ -185,12 +225,18 @@ class MuseTalkService:
             # Extract audio features
             print("Extracting audio features...")
             whisper_input_features, librosa_length = audio_processor.get_audio_feature(audio_path)
-            print(f"Audio features extracted. Librosa length: {librosa_length}")
+            print(f"Audio features extracted. Librosa length: {librosa_length} samples")
             
-            # Get video FPS if it's a video file
+            # Calculate audio duration in seconds - librosa_length is in samples, need to divide by sampling rate
+            sr = 16000  # Sampling rate from audio_processor
+            audio_duration = librosa_length / sr
+            print(f"Audio duration: {audio_duration:.2f} seconds ({librosa_length} samples at {sr}Hz)")
+            
+            # Get video FPS if it's a video file (for reference only, don't override user-specified FPS)
             if get_file_type(video_path) == "video":
-                fps = get_video_fps(video_path)
-                print(f"Video FPS detected: {fps}")
+                video_native_fps = get_video_fps(video_path)
+                print(f"Video native FPS: {video_native_fps}")
+                print(f"Using user-specified FPS: {fps}")
             
             print("Processing Whisper chunks...")
             whisper_chunks = audio_processor.get_whisper_chunk(
@@ -255,8 +301,19 @@ class MuseTalkService:
             input_latent_list_cycle = input_latent_list + input_latent_list[::-1]
             print(f"Cyclic lists created. Cycle length: {len(frame_list_cycle)}")
             
-            # Start inference thread
-            print("Starting inference and streaming threads...")
+            # Initialize streaming parameters
+            self.stream_url = stream_url
+            self.audio_duration = audio_duration
+            self.estimated_finish_time = float('inf')
+            self.phase1_complete = False
+            self.phase2_active = False
+            
+            # Clear any existing buffer
+            with self.buffer_lock:
+                self.frame_buffer.clear()
+            
+            # Start inference thread (main thread)
+            print("Starting inference thread...")
             self.processing = True
             inference_thread = threading.Thread(
                 target=self._run_inference,
@@ -265,23 +322,25 @@ class MuseTalkService:
             )
             inference_thread.start()
             
-            # Start streaming thread
-            stream_thread = threading.Thread(
-                target=self._stream_frames,
-                args=(stream_url,)
+            # Start worker thread for streaming
+            print("Starting worker thread for streaming...")
+            worker_thread = threading.Thread(
+                target=self._worker_thread,
+                args=()
             )
-            stream_thread.start()
+            worker_thread.start()
             
             # Wait for inference to complete
             print("Waiting for inference to complete...")
             inference_thread.join()
             print("Inference completed!")
             
-            # Wait for streaming to complete
-            print("Waiting for streaming to complete...")
+            
+            # Wait for worker thread to complete
+            print("Waiting for worker thread to complete...")
             self.processing = False
-            stream_thread.join()
-            print("Streaming completed!")
+            worker_thread.join()
+            print("Worker thread completed!")
             
             # Cleanup
             if get_file_type(video_path) == "video":
@@ -304,6 +363,7 @@ class MuseTalkService:
             print(f"Total whisper chunks: {video_num}")
             print(f"Batch size: {batch_size}")
             print(f"Expected total frames: {video_num}")
+            print(f"Audio duration: {self.audio_duration:.2f}s")
             print(f"==========================")
             
             gen = datagen(
@@ -317,6 +377,7 @@ class MuseTalkService:
             frame_idx = 0
             batch_count = 0
             start_time = time.time()
+            frameTime = time.time()  # For estimated time calculation
             
             for i, (whisper_batch, latent_batch) in enumerate(gen):
                 batch_count += 1
@@ -334,7 +395,9 @@ class MuseTalkService:
                 pred_latents = unet.model(latent_batch, timesteps, encoder_hidden_states=audio_feature_batch).sample
                 recon = vae.decode_latents(pred_latents)
                 
+                # Process frames in this batch
                 frames_in_batch = 0
+                
                 for res_frame in recon:
                     # Process frame for streaming
                     bbox = coord_list_cycle[frame_idx % len(coord_list_cycle)]
@@ -355,18 +418,35 @@ class MuseTalkService:
                     combine_frame = get_image(ori_frame, res_frame, [x1, y1, x2, y2], 
                                             mode=parsing_mode, fp=fp)
                     
-                    # Add to queue for streaming
-                    self.frame_queue.put((frame_idx, combine_frame))
+                    # Encode frame as JPEG
+                    _, buffer = cv2.imencode('.jpg', combine_frame)
+                    frame_data = buffer.tobytes()
+                    
+                    # Push frame to main buffer immediately for lower latency streaming
+                    with self.buffer_lock:
+                        self.frame_buffer.append({
+                            'frame_number': frame_idx,
+                            'frame_data': frame_data
+                        })
+                    
                     frame_idx += 1
                     frames_in_batch += 1
+                
                 
                 batch_time = time.time() - batch_start_time
                 elapsed_time = time.time() - start_time
                 avg_fps = frame_idx / elapsed_time if elapsed_time > 0 else 0
                 
+                # Calculate estimated time to finish and update for worker thread
+                if batch_count >= 1:
+                    self.estimated_finish_time = (time.time() - frameTime) * (video_num - frame_idx) / frame_idx
+                    print(f"  Estimated time to finish: {self.estimated_finish_time:.2f}s")
+                    print(f"  Audio duration: {self.audio_duration:.2f}s")
+                
                 print(f"  Batch completed in {batch_time:.2f}s")
                 print(f"  Frames in this batch: {frames_in_batch}")
                 print(f"  Total frames processed: {frame_idx}/{video_num}")
+                print(f"  Buffer size: {len(self.frame_buffer)}")
                 print(f"  Average FPS: {avg_fps:.2f}")
                 print(f"  Progress: {(frame_idx/video_num)*100:.1f}%")
                 print("  ---")
@@ -386,65 +466,173 @@ class MuseTalkService:
             print(f"Error in inference thread: {e}")
             self.processing = False
     
-    def _stream_frames(self, stream_url: str):
-        """Stream frames to the specified URL"""
-        frame_idx = 0
-        start_time = time.time()
-        last_log_time = start_time
+    def _worker_thread(self):
+        """Worker thread that handles 2-phase streaming logic"""
+        total_frames_sent = 0
         
-        print(f"=== Starting Frame Streaming ===")
-        print(f"Stream URL: {stream_url}")
+        print(f"=== Starting Worker Thread ===")
+        print(f"Stream URL: {self.stream_url}")
+        print(f"Audio duration: {self.audio_duration:.2f}s")
+        print(f"Waiting for estimated time to be <= audio duration...")
         print(f"===============================")
         
-        while self.processing or not self.frame_queue.empty():
+        # Phase 0: Wait for estimated time to be <= audio duration
+        wait_count = 0
+        while self.estimated_finish_time > self.audio_duration and self.processing:
+            time.sleep(0.1)  # Check every 100ms
+            wait_count += 1
+            if wait_count % 50 == 0:  # Log every 5 seconds
+                print(f"  Still waiting... (waited {wait_count*0.1:.1f}s)")
+                print(f"  Estimated finish time: {self.estimated_finish_time:.2f}s")
+                print(f"  Audio duration: {self.audio_duration:.2f}s")
+                print(f"  Buffer size: {len(self.frame_buffer)}")
+        
+        # Check if we exited because processing stopped
+        if not self.processing:
+            print(f"*** PROCESSING STOPPED BEFORE PHASE 1 ***")
+            return
+        
+        print(f"*** PHASE 1: SENDING INITIAL BUFFER ***")
+        print(f"  Estimated finish time ({self.estimated_finish_time:.2f}s) <= Audio duration ({self.audio_duration:.2f}s)")
+        
+        # Phase 1: Send entire buffer to web page
+        with self.buffer_lock:
+            initial_buffer = self.frame_buffer.copy()
+        
+        if initial_buffer:
             try:
-                if self.frame_queue.empty():
-                    time.sleep(0.01)
-                    continue
+                print(f"  SENDING INITIAL BUFFER with {len(initial_buffer)} frames...")
+                buffer_data = {
+                    'frames': [
+                        {
+                            'frame_number': frame['frame_number'],
+                            'frame_data': base64.b64encode(frame['frame_data']).decode('utf-8')
+                        }
+                        for frame in initial_buffer
+                    ],
+                    'total_frames': len(initial_buffer),
+                    'timestamp': time.time()
+                }
                 
-                idx, frame = self.frame_queue.get(timeout=1)
+                response = requests.post(
+                    self.stream_url,
+                    json=buffer_data,
+                    headers={'Content-Type': 'application/json'},
+                    timeout=10
+                )
                 
-                # Encode frame as JPEG
-                _, buffer = cv2.imencode('.jpg', frame)
-                frame_data = buffer.tobytes()
-                
-                # Send frame to stream URL
-                try:
-                    response = requests.post(
-                        stream_url,
-                        data=frame_data,
-                        headers={'Content-Type': 'image/jpeg', 'Frame-Index': str(idx)},
-                        timeout=5
-                    )
-                    if response.status_code != 200:
-                        print(f"Warning: Failed to stream frame {idx}, status: {response.status_code}")
-                except Exception as e:
-                    print(f"Error streaming frame {idx}: {e}")
-                
-                frame_idx += 1
-                
-                # Log progress every 50 frames or every 2 seconds
-                current_time = time.time()
-                if frame_idx % 50 == 0 or (current_time - last_log_time) >= 2.0:
-                    elapsed_time = current_time - start_time
-                    streaming_fps = frame_idx / elapsed_time if elapsed_time > 0 else 0
-                    print(f"Streamed {frame_idx} frames (FPS: {streaming_fps:.2f})")
-                    last_log_time = current_time
-                
-            except queue.Empty:
-                continue
+                if response.status_code == 200:
+                    frames_sent = len(initial_buffer)
+                    total_frames_sent += frames_sent
+                    print(f"  SUCCESS: Sent initial buffer with {frames_sent} frames")
+                    print(f"  Total frames sent so far: {total_frames_sent}")
+                    
+                    # Clear the buffer after successful send to prevent duplicates
+                    with self.buffer_lock:
+                        self.frame_buffer.clear()
+                        print(f"  BUFFER CLEARED - size now: 0")
+                    
+                    self.phase1_complete = True
+                else:
+                    print(f"  ERROR: Failed to send initial buffer, status: {response.status_code}")
+                    return
+                    
             except Exception as e:
-                print(f"Error in streaming thread: {e}")
-                break
+                print(f"  ERROR sending initial buffer: {e}")
+                return
+        else:
+            print(f"  No frames in initial buffer")
+            return
         
-        total_time = time.time() - start_time
-        final_streaming_fps = frame_idx / total_time if total_time > 0 else 0
+        print(f"*** PHASE 2: SENDING SUBSEQUENT BATCHES ***")
+        self.phase2_active = True
         
-        print(f"=== Streaming Complete ===")
-        print(f"Total frames streamed: {frame_idx}")
-        print(f"Total streaming time: {total_time:.2f}s")
-        print(f"Final streaming FPS: {final_streaming_fps:.2f}")
-        print(f"==========================")
+        # Phase 2: Send each batch as it arrives in the buffer
+        # Continue until processing stops AND buffer is empty
+        while self.processing or len(self.frame_buffer) > 0:
+            # Check for new frames in buffer
+            with self.buffer_lock:
+                current_buffer_size = len(self.frame_buffer)
+            
+            if current_buffer_size > 0:
+                # New batch available - send it immediately
+                print(f"  Found {current_buffer_size} new frames in buffer")
+                
+                # Get all frames in buffer (this is the new batch)
+                with self.buffer_lock:
+                    new_batch = self.frame_buffer.copy()
+                    self.frame_buffer.clear()  # Clear buffer after sending
+                
+                try:
+                    print(f"  SENDING BATCH with {len(new_batch)} frames...")
+                    buffer_data = {
+                        'frames': [
+                            {
+                                'frame_number': frame['frame_number'],
+                                'frame_data': base64.b64encode(frame['frame_data']).decode('utf-8')
+                            }
+                            for frame in new_batch
+                        ],
+                        'total_frames': len(new_batch),
+                        'timestamp': time.time()
+                    }
+                    
+                    response = requests.post(
+                        self.stream_url,
+                        json=buffer_data,
+                        headers={'Content-Type': 'application/json'},
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        frames_sent = len(new_batch)
+                        total_frames_sent += frames_sent
+                        print(f"  SUCCESS: Sent batch with {frames_sent} frames")
+                        print(f"  Total frames sent so far: {total_frames_sent}")
+                    else:
+                        print(f"  ERROR: Failed to send batch, status: {response.status_code}")
+                        
+                except Exception as e:
+                    print(f"  ERROR sending batch: {e}")
+            
+            # Small sleep to prevent busy waiting, but keep latency low
+            time.sleep(0.02)
+            
+            # Log status if processing stopped but buffer not empty
+            if not self.processing and current_buffer_size > 0:
+                print(f"  Processing stopped, but {current_buffer_size} frames still in buffer")
+        
+        # All frames have been sent
+        print(f"  All frames sent - buffer is empty and processing stopped")
+        
+        # Send finished signal
+        try:
+            print(f"  SENDING FINISHED SIGNAL...")
+            finished_data = {
+                'status': 'finished',
+                'total_frames_sent': total_frames_sent,
+                'timestamp': time.time(),
+                'message': 'Streaming completed successfully'
+            }
+            
+            response = requests.post(
+                self.stream_url,
+                json=finished_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                print(f"  SUCCESS: Sent finished signal")
+            else:
+                print(f"  ERROR: Failed to send finished signal, status: {response.status_code}")
+                
+        except Exception as e:
+            print(f"  ERROR sending finished signal: {e}")
+        
+        print(f"=== Worker Thread Complete ===")
+        print(f"Total frames sent: {total_frames_sent}")
+        print(f"=============================")
 
 # Global service instance
 service = None
@@ -472,12 +660,13 @@ def process_audio():
             return jsonify({"error": "No audio file selected"}), 400
         
         # Get parameters
-        video_path = request.form.get('video_path')
         stream_url = request.form.get('stream_url')
+        fps = int(request.form.get('fps', 25))
+        batch_size = int(request.form.get('batch_size', 20))
         bbox_shift = int(request.form.get('bbox_shift', 0))
         
-        if not video_path or not stream_url:
-            return jsonify({"error": "video_path and stream_url are required"}), 400
+        if not stream_url:
+            return jsonify({"error": "stream_url is required"}), 400
         
         # Save audio file to inputs folder
         saved_audio_path = service.save_audio_to_inputs(audio_file, audio_file.filename)
@@ -486,7 +675,7 @@ def process_audio():
             # Start processing in background thread
             processing_thread = threading.Thread(
                 target=service.process_audio_with_video,
-                args=(saved_audio_path, video_path, stream_url, bbox_shift)
+                args=(stream_url, fps, batch_size, bbox_shift)
             )
             processing_thread.start()
             
@@ -511,7 +700,11 @@ def get_status():
     
     return jsonify({
         "status": "processing" if service.processing else "idle",
-        "queue_size": service.frame_queue.qsize()
+        "buffer_size": len(service.frame_buffer),
+        "phase1_complete": service.phase1_complete,
+        "phase2_active": service.phase2_active,
+        "estimated_finish_time": service.estimated_finish_time,
+        "audio_duration": service.audio_duration
     })
 
 def main():
