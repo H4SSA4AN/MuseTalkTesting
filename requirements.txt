@@ -22,3 +22,5 @@ moviepy
 # Service dependencies
 flask==3.0.0
 werkzeug==3.0.1
+aiortc==1.7.0
+av==10.0.0
