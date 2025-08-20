@@ -536,12 +536,10 @@ class MuseTalkService:
                     # Mark start signal as sent
                     self._start_signal_sent = True
                 
-                # After start condition is met, send buffer every 2 batches
+                # After start condition is met, send buffer after every batch
                 elif (self._start_signal_sent and 
-                      batch_count % 2 == 0 and 
                       len(self.frame_buffer) > 0):
-                    
-                    print(f"Inference: Queuing buffer after {batch_count} batches ({len(self.frame_buffer)} frames)")
+                    print(f"Inference: Queuing buffer after batch {batch_count} ({len(self.frame_buffer)} frames)")
                     self._queue_buffer_for_sending()
                 
                 batch_time = time.time() - batch_start_time
@@ -675,63 +673,50 @@ class MuseTalkService:
         print("=== Frame Worker Thread Complete ===")
 
     def _buffer_sender_thread(self):
-        """Dedicated thread to send frames from the buffer queue without blocking inference."""
+        """Dedicated thread to stream frames to the web page over a single persistent HTTP request."""
         print("=== Buffer Sender Thread Started ===")
-        buffers_sent = 0
         
-        # Create a session for connection pooling and faster requests
         import requests
         session = requests.Session()
-        session.headers.update({'Content-Type': 'application/json'})
+        # Use NDJSON for line-delimited JSON streaming
+        session.headers.update({'Content-Type': 'application/x-ndjson', 'Connection': 'keep-alive'})
         
-        while not self.buffer_sender_stop:
+        # Build generator that yields JSON lines as buffers arrive
+        def payload_generator():
+            # Send an initial handshake line immediately to avoid empty-body ambiguity
             try:
-                # Get buffer from queue with timeout
+                handshake = {"status": "connected", "timestamp": time.time()}
+                yield (json.dumps(handshake) + "\n").encode('utf-8')
+            except Exception:
+                pass
+            
+            while True:
+                if self.buffer_sender_stop and self.buffer_queue.empty():
+                    break
                 try:
-                    buffer_data = self.buffer_queue.get(timeout=0.1)
+                    item = self.buffer_queue.get(timeout=0.1)
                 except queue.Empty:
-                    # Check if inference is complete and queue is empty
-                    if self.inference_complete and self.buffer_queue.empty():
-                        break
+                    # Optional: small keepalive whitespace line every second
                     continue
-                
-                # Send the buffer to the web page
-                frames_to_send = buffer_data['frames']
-                total_frames = buffer_data['total_frames']
-                inference_complete = buffer_data['inference_complete']
-                
-                payload = {
-                    'frames': frames_to_send,
-                    'total_frames': total_frames,
-                    'inference_complete': inference_complete
-                }
-                
                 try:
-                    # Use session for connection pooling and faster requests
-                    resp = session.post(
-                        self.stream_url,
-                        json=payload,
-                        timeout=5,
-                        headers={'Content-Type': 'application/json'}
-                    )
-                    if resp.status_code == 200:
-                        print(f"Sender: Successfully sent {len(frames_to_send)} frames")
-                        buffers_sent += 1
-                    else:
-                        print(f"Sender: HTTP error sending buffer: status {resp.status_code}")
-                except Exception as e:
-                    print(f"Sender: Error sending buffer: {e}")
-                
-                # Mark task as done
-                self.buffer_queue.task_done()
-                
-            except Exception as e:
-                print(f"Sender: Unexpected error in buffer sender thread: {e}")
-                time.sleep(0.1)
+                    line = (json.dumps(item) + "\n").encode('utf-8')
+                    yield line
+                finally:
+                    self.buffer_queue.task_done()
         
-        # Close session
-        session.close()
-        print(f"=== Buffer Sender Thread Complete - Sent {buffers_sent} buffers ===")
+        try:
+            # Ensure we are targeting the persistent stream endpoint
+            stream_url = self.stream_url.replace('/receive_frame', '/stream_frames')
+            print(f"Establishing streaming upload to: {stream_url}")
+            
+            # Perform a single POST with a streaming body. Requests will use chunked encoding automatically.
+            resp = session.post(stream_url, data=payload_generator(), timeout=3600)
+            print(f"Streaming upload completed with status: {resp.status_code}")
+        except Exception as e:
+            print(f"Sender: Streaming upload error: {e}")
+        finally:
+            session.close()
+            print("=== Buffer Sender Thread Complete ===")
 
     def _queue_buffer_for_sending(self):
         """Queue the current buffer for sending to the web page."""
