@@ -34,6 +34,8 @@ from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder
 
 app = Flask(__name__)
+ 
+
 
 # Global variables for model components
 vae = None
@@ -96,6 +98,9 @@ class MuseTalkService:
         self._worker_stop = False
         self._worker_frames_sent = 0
         
+        # Default callback stream URL (can be registered via /health probe)
+        self.default_stream_url = None
+
         # Create inputs folder if it doesn't exist
         self.inputs_dir = "inputs"
         os.makedirs(self.inputs_dir, exist_ok=True)
@@ -609,6 +614,7 @@ class MuseTalkService:
                     'timestamp': time.time(),
                     'message': 'Starting frame streaming - ETA <= audio duration'
                 }
+                print(f"Start signal: POST to {self.stream_url} (ETA={eft}, audio={self.audio_duration})")
                 response = requests.post(
                     self.stream_url,
                     json=start_data,
@@ -616,7 +622,11 @@ class MuseTalkService:
                     timeout=10
                 )
                 if response.status_code == 200:
-                    print(f"  SUCCESS: Start signal sent (ETA: {eft:.2f}s <= Audio: {self.audio_duration:.2f}s)")
+                    try:
+                        eft_str = f"{float(eft):.2f}s" if eft is not None else "unknown"
+                    except Exception:
+                        eft_str = str(eft)
+                    print(f"  SUCCESS: Start signal sent to {self.stream_url} (ETA: {eft_str} <= Audio: {self.audio_duration:.2f}s)")
                     self._start_signal_sent = True
                     self._streaming_started = True
                 else:
@@ -644,6 +654,7 @@ class MuseTalkService:
                     'timestamp': time.time(),
                     'message': f'Inference completed successfully - {self.frame_count}/{self.total_frames_expected} frames generated'
                 }
+                print(f"Finished signal: POST to {self.stream_url} (frames {self.frame_count}/{self.total_frames_expected})")
                 response = requests.post(
                     self.stream_url,
                     json=finished_data,
@@ -651,7 +662,7 @@ class MuseTalkService:
                     timeout=5
                 )
                 if response.status_code == 200:
-                    print(f"  SUCCESS: Sent finished signal")
+                    print(f"  SUCCESS: Sent finished signal to {self.stream_url}")
                     self._finished_signal_sent = True
                 else:
                     print(f"  ERROR: Failed to send finished signal, status: {response.status_code}")
@@ -708,6 +719,7 @@ class MuseTalkService:
             # Ensure we are targeting the persistent stream endpoint
             stream_url = self.stream_url.replace('/receive_frame', '/stream_frames')
             print(f"Establishing streaming upload to: {stream_url}")
+            print(f"Frames will be sent to: {stream_url}")
             
             # Perform a single POST with a streaming body. Requests will use chunked encoding automatically.
             resp = session.post(stream_url, data=payload_generator(), timeout=3600)
@@ -739,7 +751,8 @@ class MuseTalkService:
                 'total_frames': self.total_frames_expected,
                 'inference_complete': False
             })
-            print(f"Queued {len(frames_to_send)} frames for sending")
+            target_url = (self.stream_url or '').replace('/receive_frame', '/stream_frames')
+            print(f"Queued {len(frames_to_send)} frames for sending (target: {target_url})")
         except Exception as e:
             print(f"Error queuing buffer for sending: {e}")
 
@@ -853,8 +866,26 @@ def health_check():
     except Exception:
         remote = None
     ua = request.headers.get('User-Agent', '') if request else ''
-    print(f"/health probe received from {remote or 'unknown'} | UA: {ua}")
-    return jsonify({"status": "healthy", "models_loaded": service is not None})
+    # Derive stream URL from the incoming client IP (not Host), with optional stream_port/proto hints
+    try:
+        # Prefer X-Forwarded-For first IP if present, else remote_addr
+        xff = request.headers.get('X-Forwarded-For', '')
+        client_ip = (xff.split(',')[0].strip() if xff else None) or remote
+        # Determine protocol and port
+        proto = request.args.get('stream_proto') or request.headers.get('X-Forwarded-Proto') or 'http'
+        port_str = request.args.get('stream_port') or request.headers.get('X-Forwarded-Port')
+        if not port_str:
+            # Sensible default for our aio app
+            port_str = '5000'
+        # Build URL explicitly with IP and port
+        if service is not None and client_ip:
+            service.default_stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
+            print(f"/health probe received from {remote or 'unknown'} | UA: {ua} | registered stream_url={service.default_stream_url}")
+        else:
+            print(f"/health probe received from {remote or 'unknown'} | UA: {ua}")
+    except Exception as e:
+        print(f"/health probe received from {remote or 'unknown'} | UA: {ua} | error deriving stream url: {e}")
+    return jsonify({"status": "healthy", "models_loaded": service is not None, "stream_url": getattr(service, 'default_stream_url', None)})
 
 @app.route('/process', methods=['POST'])
 def process_audio():
@@ -880,13 +911,32 @@ def process_audio():
             return jsonify({"error": "No audio file selected"}), 400
         
         # Get parameters
-        stream_url = request.form.get('stream_url')
+        # Build stream_url from the remote client address (the AvatarPage host)
+        try:
+            xff = request.headers.get('X-Forwarded-For', '')
+            client_ip = (xff.split(',')[0].strip() if xff else None) or request.remote_addr
+        except Exception:
+            client_ip = None
+        proto = request.headers.get('X-Forwarded-Proto') or 'http'
+        port_str = request.headers.get('X-Forwarded-Port') or '5000'
+        stream_url = None
+        if client_ip:
+            stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
+            print(f"/process: derived stream_url from remote client {client_ip} -> {stream_url}")
+        else:
+            # Fallback to provided form value or previously registered default
+            stream_url = request.form.get('stream_url')
         fps = int(request.form.get('fps', 25))
         batch_size = int(request.form.get('batch_size', 20))
         bbox_shift = int(request.form.get('bbox_shift', 0))
         
+        # Final fallback: use the registered default from /health probe
         if not stream_url:
-            return jsonify({"error": "stream_url is required"}), 400
+            if service.default_stream_url:
+                stream_url = service.default_stream_url
+                print(f"/process: using registered default stream_url: {stream_url}")
+            else:
+                return jsonify({"error": "Unable to derive stream_url from remote address and no default is registered"}), 400
         
         # Save audio file to inputs folder
         saved_audio_path = service.save_audio_to_inputs(audio_file, audio_file.filename)
