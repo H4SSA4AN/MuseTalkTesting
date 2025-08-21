@@ -848,6 +848,12 @@ service = None
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    try:
+        remote = request.remote_addr
+    except Exception:
+        remote = None
+    ua = request.headers.get('User-Agent', '') if request else ''
+    print(f"/health probe received from {remote or 'unknown'} | UA: {ua}")
     return jsonify({"status": "healthy", "models_loaded": service is not None})
 
 @app.route('/process', methods=['POST'])
