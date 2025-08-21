@@ -83,6 +83,14 @@ class MuseTalkService:
         self.total_frames_expected = 0  # Track total frames that should be generated
         self._worker_frames_sent = 0  # Kept for logging compatibility
         self.fps = 25
+        # Max frames per NDJSON line to reduce latency/JSON size
+        self.ndjson_chunk_size = 12
+        # Control whether to use NDJSON sender (POST to aio_app). Enable to send whole buffers.
+        self.use_ndjson_sender = True
+
+        # Pre-start accumulation: store frames until start condition
+        self.pre_start_frames = []
+        self.pre_start_lock = threading.Lock()
 
         # WebRTC components
         self.webrtc_pc = None
@@ -367,31 +375,34 @@ class MuseTalkService:
             inference_thread.start()
             
             # Start buffer sender thread (dedicated thread for sending frames)
-            print("Starting buffer sender thread...")
-            self.buffer_sender_stop = False
-            self.buffer_sender_thread = threading.Thread(
-                target=self._buffer_sender_thread,
-                args=()
-            )
-            self.buffer_sender_thread.start()
+            if self.use_ndjson_sender:
+                print("Starting buffer sender thread...")
+                self.buffer_sender_stop = False
+                self.buffer_sender_thread = threading.Thread(
+                    target=self._buffer_sender_thread,
+                    args=()
+                )
+                self.buffer_sender_thread.start()
             
             # Start start-signal thread (only handles start signal based on ETA)
-            print("Starting start-signal thread (ETA gating)...")
-            signal_thread = threading.Thread(
-                target=self._signal_gating_thread,
-                args=()
-            )
-            signal_thread.start()
+            if self.use_ndjson_sender:
+                print("Starting start-signal thread (ETA gating)...")
+                signal_thread = threading.Thread(
+                    target=self._signal_gating_thread,
+                    args=()
+                )
+                signal_thread.start()
 
             # Start worker thread to send processed batches to the web page
-            print("Starting frame worker thread (HTTP batch sender)...")
-            self._worker_stop = False
-            self._worker_frames_sent = 0
-            self._worker_thread = threading.Thread(
-                target=self._frame_worker_thread,
-                args=() # Pass batch_size to the worker
-            )
-            self._worker_thread.start()
+            if self.use_ndjson_sender:
+                print("Starting frame worker thread (HTTP batch sender)...")
+                self._worker_stop = False
+                self._worker_frames_sent = 0
+                self._worker_thread = threading.Thread(
+                    target=self._frame_worker_thread,
+                    args=()
+                )
+                self._worker_thread.start()
             
             # Wait for inference to complete
             print("Waiting for inference to complete...")
@@ -399,21 +410,24 @@ class MuseTalkService:
             print("Inference completed!")
 
             # Wait for start-signal thread to complete
-            print("Waiting for start-signal thread to complete...")
-            signal_thread.join()
-            print("Start-signal thread completed!")
+            if self.use_ndjson_sender:
+                print("Waiting for start-signal thread to complete...")
+                signal_thread.join()
+                print("Start-signal thread completed!")
 
             # Stop buffer sender thread and wait for it to complete
-            print("Stopping buffer sender thread...")
-            self.buffer_sender_stop = True
-            if self.buffer_sender_thread:
-                self.buffer_sender_thread.join()
-            print("Buffer sender thread completed!")
+            if self.use_ndjson_sender:
+                print("Stopping buffer sender thread...")
+                self.buffer_sender_stop = True
+                if self.buffer_sender_thread:
+                    self.buffer_sender_thread.join()
+                print("Buffer sender thread completed!")
 
             # Wait for worker to flush remaining frames and send finish signal
-            print("Waiting for frame worker to finish...")
-            self._worker_thread.join()
-            print("Frame worker completed!")
+            if self.use_ndjson_sender:
+                print("Waiting for frame worker to finish...")
+                self._worker_thread.join()
+                print("Frame worker completed!")
 
             # Verify all frames were sent
             print(f"=== Final Frame Count Verification ===")
@@ -516,9 +530,27 @@ class MuseTalkService:
                     _, buffer = cv2.imencode('.jpg', combine_frame)
                     frame_data = buffer.tobytes()
                     
-                    # Push frame to main buffer immediately for lower latency streaming
+                    # Always maintain in-memory frame_buffer for MJPEG/WebRTC consumers
                     with self.buffer_lock:
                         self.frame_buffer.append({
+                            'frame_number': frame_idx,
+                            'frame_data': frame_data
+                        })
+
+                    # Route frames depending on start condition:
+                    # - Before start signal: accumulate in pre_start_frames
+                    # - After start signal: collect in current batch list
+                    if not self._start_signal_sent:
+                        with self.pre_start_lock:
+                            self.pre_start_frames.append({
+                                'frame_number': frame_idx,
+                                'frame_data': frame_data
+                            })
+                    else:
+                        # After start, collect into this batch list
+                        if 'batch_frames' not in locals():
+                            batch_frames = []
+                        batch_frames.append({
                             'frame_number': frame_idx,
                             'frame_data': frame_data
                         })
@@ -528,10 +560,16 @@ class MuseTalkService:
                 
                 print(f"Inference: Processed batch {batch_count} with {frames_in_batch} frames (total in buffer: {len(self.frame_buffer)})")
                 
-                # Send frames from this batch immediately (progressive streaming)
-                if len(self.frame_buffer) > 0:
-                    print(f"Inference: Queuing buffer after batch {batch_count} ({len(self.frame_buffer)} frames)")
-                    self._queue_buffer_for_sending()
+                # After start signal, send this batch immediately as a single NDJSON item
+                if self.use_ndjson_sender and self._start_signal_sent and 'batch_frames' in locals() and batch_frames:
+                    try:
+                        self._queue_specific_frames_for_sending(batch_frames)
+                        print(f"Sent post-start batch {batch_count} with {len(batch_frames)} frames")
+                    except Exception as e:
+                        print(f"Error queuing post-start batch: {e}")
+                # Reset batch collection for next iteration
+                if 'batch_frames' in locals():
+                    batch_frames = []
                 
                 batch_time = time.time() - batch_start_time
                 elapsed_time = time.time() - start_time
@@ -615,6 +653,18 @@ class MuseTalkService:
                     print(f"  SUCCESS: Start signal sent to {self.stream_url} (ETA: {eft_str} <= Audio: {self.audio_duration:.2f}s)")
                     self._start_signal_sent = True
                     self._streaming_started = True
+
+                    # Immediately flush any pre-start frames to the web page as one buffer
+                    # IMPORTANT: Only when NDJSON sender is enabled
+                    try:
+                        with self.pre_start_lock:
+                            snapshot = list(self.pre_start_frames)
+                            self.pre_start_frames.clear()
+                        if self.use_ndjson_sender and snapshot:
+                            self._queue_specific_frames_for_sending(snapshot)
+                            print(f"Flushed pre-start buffer with {len(snapshot)} frames")
+                    except Exception as e:
+                        print(f"Error flushing pre-start frames: {e}")
                 else:
                     print(f"  ERROR: Failed to send start signal, status: {response.status_code}")
             except Exception as e:
@@ -717,30 +767,28 @@ class MuseTalkService:
             print("=== Buffer Sender Thread Complete ===")
 
     def _queue_buffer_for_sending(self):
-        """Queue the current buffer for sending to the web page."""
+        """Deprecated: no-op in the new flow (kept for compatibility)."""
+        return
+
+    def _queue_specific_frames_for_sending(self, frames_list):
+        """Queue a specific list of raw JPEG frames for sending as one NDJSON item."""
         try:
-            # Prepare frames for sending
             frames_to_send = []
-            with self.buffer_lock:
-                for frame_entry in self.frame_buffer:
-                    frame_b64 = base64.b64encode(frame_entry['frame_data']).decode('utf-8')
-                    frames_to_send.append({
-                        'frame_number': frame_entry['frame_number'],
-                        'frame_data': frame_b64
-                    })
-                # Clear the main buffer after preparing frames
-                self.frame_buffer.clear()
-            
-            # Queue the frames for sending
+            for frame_entry in frames_list:
+                frame_b64 = base64.b64encode(frame_entry['frame_data']).decode('utf-8')
+                frames_to_send.append({
+                    'frame_number': frame_entry['frame_number'],
+                    'frame_data': frame_b64
+                })
             self.buffer_queue.put({
                 'frames': frames_to_send,
                 'total_frames': self.total_frames_expected,
                 'inference_complete': False
             })
             target_url = (self.stream_url or '').replace('/receive_frame', '/stream_frames')
-            print(f"Queued {len(frames_to_send)} frames for sending (target: {target_url})")
+            print(f"Queued specific {len(frames_to_send)} frames (target: {target_url})")
         except Exception as e:
-            print(f"Error queuing buffer for sending: {e}")
+            print(f"Error queuing specific frames: {e}")
 
     def reset_service_state(self):
         """Reset the service state to be ready for another request"""
