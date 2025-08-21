@@ -866,21 +866,38 @@ def health_check():
     except Exception:
         remote = None
     ua = request.headers.get('User-Agent', '') if request else ''
-    # Derive stream URL from the incoming client IP (not Host), with optional stream_port/proto hints
+    # Derive stream URL from the probing connection's remote address (not Host)
     try:
-        # Prefer X-Forwarded-For first IP if present, else remote_addr
-        xff = request.headers.get('X-Forwarded-For', '')
-        client_ip = (xff.split(',')[0].strip() if xff else None) or remote
-        # Determine protocol and port
-        proto = request.args.get('stream_proto') or request.headers.get('X-Forwarded-Proto') or 'http'
-        port_str = request.args.get('stream_port') or request.headers.get('X-Forwarded-Port')
-        if not port_str:
-            # Sensible default for our aio app
-            port_str = '5000'
-        # Build URL explicitly with IP and port
+        # Prioritize the actual remote address of the TCP peer
+        client_ip = remote
+
+        # Optional hints from query for proto/port; fallback to parse from stream_base if provided
+        stream_base = request.args.get('stream_base', '')
+        stream_proto_hint = request.args.get('stream_proto', '')
+        stream_port_hint = request.args.get('stream_port', '')
+
+        proto = 'http'
+        port_str = '5000'
+
+        if stream_base:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(stream_base)
+                if parsed.scheme:
+                    proto = parsed.scheme
+                if parsed.port:
+                    port_str = str(parsed.port)
+            except Exception:
+                pass
+
+        if stream_proto_hint:
+            proto = stream_proto_hint
+        if stream_port_hint:
+            port_str = stream_port_hint
+
         if service is not None and client_ip:
             service.default_stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
-            print(f"/health probe received from {remote or 'unknown'} | UA: {ua} | registered stream_url={service.default_stream_url}")
+            print(f"/health probe from {remote or 'unknown'} | UA: {ua} | registered stream_url={service.default_stream_url}")
         else:
             print(f"/health probe received from {remote or 'unknown'} | UA: {ua}")
     except Exception as e:
@@ -911,32 +928,40 @@ def process_audio():
             return jsonify({"error": "No audio file selected"}), 400
 
         # Get parameters
-        # Build stream_url from the remote client address (the AvatarPage host)
-        try:
-            xff = request.headers.get('X-Forwarded-For', '')
-            client_ip = (xff.split(',')[0].strip() if xff else None) or request.remote_addr
-        except Exception:
-            client_ip = None
-        proto = request.headers.get('X-Forwarded-Proto') or 'http'
-        port_str = request.headers.get('X-Forwarded-Port') or '5000'
-        stream_url = None
-        if client_ip:
-            stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
-            print(f"/process: derived stream_url from remote client {client_ip} -> {stream_url}")
+        # Prefer explicit stream_url provided by the caller
+        stream_url = (request.form.get('stream_url') or '').strip()
+        if stream_url:
+            print(f"/process: using provided stream_url: {stream_url}")
         else:
-            # Fallback to provided form value or previously registered default
-            stream_url = request.form.get('stream_url')
-        fps = int(request.form.get('fps', 25))
-        batch_size = int(request.form.get('batch_size', 20))
-        bbox_shift = int(request.form.get('bbox_shift', 0))
-
-        # Final fallback: use the registered default from /health probe
-        if not stream_url:
-            if service.default_stream_url:
+            # Derive stream_url from the remote client address (the AvatarPage host)
+            try:
+                xff = request.headers.get('X-Forwarded-For', '')
+                client_ip = (xff.split(',')[0].strip() if xff else None) or request.remote_addr
+            except Exception:
+                client_ip = None
+            proto = request.headers.get('X-Forwarded-Proto') or 'http'
+            port_str = request.headers.get('X-Forwarded-Port') or '5000'
+            if client_ip:
+                stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
+                print(f"/process: derived stream_url from remote client {client_ip} -> {stream_url}")
+            elif service.default_stream_url:
                 stream_url = service.default_stream_url
                 print(f"/process: using registered default stream_url: {stream_url}")
             else:
-                return jsonify({"error": "Unable to derive stream_url from remote address and no default is registered"}), 400
+                return jsonify({"error": "Unable to determine stream_url. Provide it in form-data or register via /health"}), 400
+
+        # Normalize common alternative path
+        if stream_url.endswith('/receive_frame'):
+            stream_url = stream_url[:-13] + '/stream_frames'
+
+        # Always prefer the URL registered by the probe (/health)
+        if service.default_stream_url:
+            stream_url = service.default_stream_url
+            print(f"/process: overriding stream_url with probe-registered URL: {stream_url}")
+
+        fps = int(request.form.get('fps', 25))
+        batch_size = int(request.form.get('batch_size', 20))
+        bbox_shift = int(request.form.get('bbox_shift', 0))
 
         # Save audio file to inputs folder
         saved_audio_path = service.save_audio_to_inputs(audio_file, audio_file.filename)
