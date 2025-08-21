@@ -1066,6 +1066,55 @@ def main():
         print("3. All dependencies are installed")
         return
     
+    # Print connection URLs for users to connect from other machines
+    try:
+        port = args.port
+        urls = set()
+        # Always include localhost entries
+        urls.add(f"http://127.0.0.1:{port}")
+        urls.add(f"http://localhost:{port}")
+        # Include explicit host if not binding to all interfaces
+        if args.host and args.host not in ("0.0.0.0", "::"):
+            urls.add(f"http://{args.host}:{port}")
+
+        # Discover LAN IPs
+        def discover_ips():
+            candidates = set()
+            try:
+                import socket
+                # Primary outward-facing IP discovery
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    s.connect(("8.8.8.8", 80))
+                    candidates.add(s.getsockname()[0])
+                finally:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                # Hostname-based IPs
+                try:
+                    hostname = socket.gethostname()
+                    infos = socket.gethostbyname_ex(hostname)
+                    for ip in infos[2]:
+                        candidates.add(ip)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Filter loopback addresses
+            return [ip for ip in candidates if not ip.startswith("127.")]
+
+        for ip in discover_ips():
+            urls.add(f"http://{ip}:{port}")
+
+        print("\n=== MuseTalk Service URLs ===")
+        for u in sorted(urls):
+            print(f"  {u}")
+        print("============================\n")
+    except Exception as e:
+        print(f"Could not determine service URLs: {e}")
+
     # Start Flask app
     app.run(host=args.host, port=args.port, debug=args.debug)
 
