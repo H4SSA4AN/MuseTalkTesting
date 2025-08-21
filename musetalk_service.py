@@ -528,22 +528,8 @@ class MuseTalkService:
                 
                 print(f"Inference: Processed batch {batch_count} with {frames_in_batch} frames (total in buffer: {len(self.frame_buffer)})")
                 
-                # Check if start condition is met and we haven't sent the initial buffer yet
-                if (self.estimated_finish_time <= self.audio_duration and 
-                    not self._start_signal_sent and 
-                    len(self.frame_buffer) > 0):
-                    
-                    print(f"Inference: Start condition met! Queuing entire buffer ({len(self.frame_buffer)} frames)")
-                    
-                    # Queue entire buffer for sending (non-blocking)
-                    self._queue_buffer_for_sending()
-                    
-                    # Mark start signal as sent
-                    self._start_signal_sent = True
-                
-                # After start condition is met, send buffer after every batch
-                elif (self._start_signal_sent and 
-                      len(self.frame_buffer) > 0):
+                # Send frames from this batch immediately (progressive streaming)
+                if len(self.frame_buffer) > 0:
                     print(f"Inference: Queuing buffer after batch {batch_count} ({len(self.frame_buffer)} frames)")
                     self._queue_buffer_for_sending()
                 
