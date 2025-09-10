@@ -866,43 +866,9 @@ def health_check():
     except Exception:
         remote = None
     ua = request.headers.get('User-Agent', '') if request else ''
-    # Derive stream URL from the probing connection's remote address (not Host)
-    try:
-        # Prioritize the actual remote address of the TCP peer
-        client_ip = remote
-
-        # Optional hints from query for proto/port; fallback to parse from stream_base if provided
-        stream_base = request.args.get('stream_base', '')
-        stream_proto_hint = request.args.get('stream_proto', '')
-        stream_port_hint = request.args.get('stream_port', '')
-
-        proto = 'http'
-        port_str = '5000'
-
-        if stream_base:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(stream_base)
-                if parsed.scheme:
-                    proto = parsed.scheme
-                if parsed.port:
-                    port_str = str(parsed.port)
-            except Exception:
-                pass
-
-        if stream_proto_hint:
-            proto = stream_proto_hint
-        if stream_port_hint:
-            port_str = stream_port_hint
-
-        if service is not None and client_ip:
-            service.default_stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
-            print(f"/health probe from {remote or 'unknown'} | UA: {ua} | registered stream_url={service.default_stream_url}")
-        else:
-            print(f"/health probe received from {remote or 'unknown'} | UA: {ua}")
-    except Exception as e:
-        print(f"/health probe received from {remote or 'unknown'} | UA: {ua} | error deriving stream url: {e}")
-    return jsonify({"status": "healthy", "models_loaded": service is not None, "stream_url": getattr(service, 'default_stream_url', None)})
+    # Log health check request
+    print(f"/health probe received from {remote or 'unknown'} | UA: {ua}")
+    return jsonify({"status": "healthy", "models_loaded": service is not None})
 
 @app.route('/process', methods=['POST'])
 def process_audio():
@@ -927,37 +893,39 @@ def process_audio():
         if audio_file.filename == '':
             return jsonify({"error": "No audio file selected"}), 400
 
-        # Get parameters
-        # Prefer explicit stream_url provided by the caller
-        stream_url = (request.form.get('stream_url') or '').strip()
-        if stream_url:
-            print(f"/process: using provided stream_url: {stream_url}")
-        else:
-            # Derive stream_url from the remote client address (the AvatarPage host)
-            try:
-                xff = request.headers.get('X-Forwarded-For', '')
-                client_ip = (xff.split(',')[0].strip() if xff else None) or request.remote_addr
-            except Exception:
-                client_ip = None
+        # Compute stream_url based on the actual client that sent this POST request
+        # This overrides any stream_url provided by the client to ensure we use the correct IP
+        try:
+            # Debug: Print all relevant headers and IP info
+            print(f"/process: DEBUG - request.remote_addr = {request.remote_addr}")
+            print(f"/process: DEBUG - X-Forwarded-For = {request.headers.get('X-Forwarded-For', 'None')}")
+            print(f"/process: DEBUG - X-Forwarded-Proto = {request.headers.get('X-Forwarded-Proto', 'None')}")
+            print(f"/process: DEBUG - X-Forwarded-Port = {request.headers.get('X-Forwarded-Port', 'None')}")
+            print(f"/process: DEBUG - Host = {request.headers.get('Host', 'None')}")
+            
+            # Get client IP from X-Forwarded-For header first, then remote_addr
+            xff = request.headers.get('X-Forwarded-For', '')
+            client_ip = (xff.split(',')[0].strip() if xff else None) or request.remote_addr
+            
+            # Get protocol from headers or use default, always use port 5000
             proto = request.headers.get('X-Forwarded-Proto') or 'http'
-            port_str = request.headers.get('X-Forwarded-Port') or '5000'
+            port_str = '5000'
+            
+            print(f"/process: DEBUG - Final client_ip = {client_ip}")
+            print(f"/process: DEBUG - Final proto = {proto}")
+            print(f"/process: DEBUG - Final port_str = {port_str}")
+            
             if client_ip:
                 stream_url = f"{proto}://{client_ip}:{port_str}/stream_frames"
-                print(f"/process: derived stream_url from remote client {client_ip} -> {stream_url}")
-            elif service.default_stream_url:
-                stream_url = service.default_stream_url
-                print(f"/process: using registered default stream_url: {stream_url}")
+                print(f"/process: COMPUTED stream_url from POST client {client_ip}:{port_str} -> {stream_url}")
             else:
-                return jsonify({"error": "Unable to determine stream_url. Provide it in form-data or register via /health"}), 400
+                return jsonify({"error": "Unable to determine client IP address for stream_url"}), 400
+        except Exception as e:
+            return jsonify({"error": f"Error deriving stream_url: {str(e)}"}), 400
 
         # Normalize common alternative path
         if stream_url.endswith('/receive_frame'):
             stream_url = stream_url[:-13] + '/stream_frames'
-
-        # Always prefer the URL registered by the probe (/health)
-        if service.default_stream_url:
-            stream_url = service.default_stream_url
-            print(f"/process: overriding stream_url with probe-registered URL: {stream_url}")
 
         fps = int(request.form.get('fps', 25))
         batch_size = int(request.form.get('batch_size', 20))

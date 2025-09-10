@@ -1,10 +1,10 @@
 task_0:
- video_path: "data/video/yongen.mp4"
- audio_path: "data/audio/yongen.wav"
+ video_path: "data/video/IdleVideo.mp4"
+ audio_path: "data/audio/audio/audio_noAns.mp3"
 
 task_1:
- video_path: "data/video/yongen.mp4"
- audio_path: "data/audio/eng.wav"
+ video_path: "data/video/ExplainingVideo.mp4"
+ audio_path: "data/audio/audio/audio_1.mp3"
  bbox_shift: -7
   
 
