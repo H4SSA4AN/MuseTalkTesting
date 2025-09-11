@@ -1,0 +1,26 @@
+# MuseTalk Service Configuration
+# Model paths
+unet_model_path: "./models/musetalkV15/unet.pth"
+vae_type: "sd-vae"
+unet_config: "./models/musetalk/musetalk.json"
+whisper_dir: "./models/whisper"
+
+# Model settings
+version: "v15"
+use_float16: true
+batch_size: 4
+
+# Video processing settings
+fps: 15
+extra_margin: 10
+parsing_mode: "jaw"
+left_cheek_width: 90
+right_cheek_width: 90
+
+# Audio processing settings
+audio_padding_length_left: 2
+audio_padding_length_right: 2
+
+# Service settings
+max_audio_length: 300  # Maximum audio length in seconds
+temp_dir: "./temp"
